@@ -1,0 +1,23 @@
+[package]
+name = "canopen_rust"
+version = "0.1.0"
+authors = ["Zephyr Guo <zephyr@atomi.ai>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = { version = "1.0", optional = true }
+async-std = "1.10"
+socketcan = { git = "https://github.com/socketcan-rs/socketcan-rs", branch = "master", features = ["async-std"]}
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+anyhow = "1.0"
+lazy_static = "1.4"
+
+[features]
+utils = ["anyhow"]
+
+[workspace]
+# 如果你想在此项目中包含多个包，你可以定义一个工作区。

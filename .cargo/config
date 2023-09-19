@@ -1,0 +1,2 @@
+[target.thumbv6m-none-eabi]
+linker = "arm-none-eabi-gcc"

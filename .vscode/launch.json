@@ -1,0 +1,30 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Tests",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceRoot}/target/debug/deps/your_project_name-xxxxxxx", 
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceRoot}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "miDebuggerPath": "rust-gdb",
+            "sourceFileMap": {
+                "/rustc/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "${workspaceRoot}/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/src"
+            },
+            "preLaunchTask": "cargo test build", 
+            "internalConsoleOptions": "openOnSessionStart"
+        }
+    ]
+}
