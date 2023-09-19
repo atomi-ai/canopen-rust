@@ -7,17 +7,19 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = { version = "1.0", optional = true }
-async-std = "1.10"
+rp2040-hal = { version = "0.9", optional = true }
 socketcan = { git = "https://github.com/socketcan-rs/socketcan-rs", branch = "master", features = ["async-std"]}
-tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
 anyhow = "1.0"
+async-std = "1.12"
 lazy_static = "1.4"
+tokio = { version = "1", features = ["full"] }
 
 [features]
-utils = ["anyhow"]
+default = ["linux"]
+linux = []
+rp2040 = ["rp2040-hal"]
 
 [workspace]
 # 如果你想在此项目中包含多个包，你可以定义一个工作区。

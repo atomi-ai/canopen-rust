@@ -2,5 +2,8 @@
 //   cargo build --target thumbv6m-none-eabi
 //   cargo build --target x86_64-unknown-linux-gnu
 
-// #![no_std]
+#![cfg_attr(not(feature = "linux"), no_std)]
 pub mod canopen;
+
+mod multi_platform;
+pub use multi_platform::sleep;

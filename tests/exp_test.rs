@@ -13,23 +13,26 @@ use socketcan::async_io::CanSocket;
 use socketcan::EmbeddedFrame;
 use socketcan::Frame;
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
-
-const INTERFACE_NAME: &str = "vcan0";
 
 struct TestContext {
     socket: CanSocket,
-    node: canopen::Node,
+    node_thread: thread::JoinHandle<()>,
 }
 
 impl TestContext {
     async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         println!("Setting up...");
 
-        let s = CanSocket::open(INTERFACE_NAME).unwrap();
+        let s = CanSocket::open(tu::INTERFACE_NAME).unwrap();
         let read_task = s.read_frame();
-        let n = canopen::Node::new(INTERFACE_NAME);
-        n.start_and_wait_until_ready();
+
+        let node_thread = thread::spawn(move || {
+            let node = canopen::Node::new(tu::INTERFACE_NAME);
+            node.run();
+            node.start_and_wait_until_ready();
+        });
 
         let msg = timeout(Duration::from_secs(3), read_task).await??;
 
@@ -40,7 +43,10 @@ impl TestContext {
             );
         }
 
-        Ok(TestContext { socket: s, node: n })
+        Ok(TestContext {
+            socket: s,
+            node_thread,
+        })
     }
 }
 

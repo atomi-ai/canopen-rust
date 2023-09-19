@@ -5,6 +5,7 @@ use async_std::future::timeout;
 use canopen_rust::canopen;
 use socketcan::async_io::CanSocket;
 use socketcan::{CanFrame, EmbeddedFrame, Socket, StandardId};
+use std::thread;
 use std::time::Duration;
 use tokio;
 
@@ -36,11 +37,14 @@ fn test_nodes_communication_basic() {
 
 #[tokio::test]
 async fn test_start_a_conode() {
-    let client_socket = CanSocket::open("vcan0").unwrap();
+    let client_socket = CanSocket::open(tu::INTERFACE_NAME).unwrap();
     let read_task = client_socket.read_frame();
 
-    let node = canopen::Node::new("vcan0");
-    node.start_and_wait_until_ready();
+    thread::spawn(move || {
+        let node = canopen::Node::new(tu::INTERFACE_NAME);
+        node.run();
+        node.start_and_wait_until_ready();
+    });
 
     // Wait for the expected msg
     let timeout_duration = Duration::from_secs(5);
