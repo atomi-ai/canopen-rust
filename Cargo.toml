@@ -9,6 +9,9 @@ edition = "2021"
 [dependencies]
 rp2040-hal = { version = "0.9", optional = true }
 socketcan = { git = "https://github.com/socketcan-rs/socketcan-rs", branch = "master", features = ["async-std"]}
+ini_core = "0.2"
+regex = "1"
+hashbrown = "0.14"
 
 [dev-dependencies]
 anyhow = "1.0"

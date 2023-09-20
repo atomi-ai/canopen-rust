@@ -25,3 +25,18 @@ pub use linux::sleep;
 
 #[cfg(feature = "rp2040")]
 pub use rp2040::sleep;
+
+#[macro_export]
+macro_rules! xprintln {
+    ($($arg:tt)*) => {
+        #[cfg(feature = "linux")]
+        {
+            println!($($arg)*);
+        }
+
+        #[cfg(feature = "rp2040")]
+        {
+            // TODO(zephyr): Add logging solution for RP2040.
+        }
+    };
+}
