@@ -138,8 +138,23 @@ pub struct Variable {
     pub pdo_mappable: bool,
     pub access_type: String,
     pub parameter_value: Option<Value>,
-    pub index: i32,
-    pub subindex: i32,
+    pub index: u16,
+    pub subindex: u8,
+}
+
+impl Variable {
+    pub fn to_packet(&self, cmd: u8) -> Vec<u8> {
+        let mut packet = Vec::new();
+        let v = &self.default_value;
+        let real_cmd = cmd | ((4 - v.len() as u8) << 2);
+        packet.push(real_cmd);
+        packet.push((self.index & 0xFF) as u8);
+        packet.push((self.index >> 8) as u8);
+        packet.push(self.subindex);
+        packet.extend_from_slice(v.as_slice());
+
+        packet
+    }
 }
 
 #[derive(Debug)]
@@ -262,7 +277,7 @@ fn string_to_value(data_type: &DataType, data_string: &str) -> Result<Value, Str
 fn get_value(
     properties: &HashMap<String, String>,
     property_name: &str,
-    node_id: i32,
+    node_id: u16,
     data_type: &DataType,
 ) -> Option<Value> {
     let mut raw = properties
@@ -275,7 +290,7 @@ fn get_value(
     }
     if raw.contains("$NODEID") {
         // rewrite the string "123 + $NODEID" => "125" if this is node 2.
-        raw = util::to_value_with_node_id(node_id, data_type, &raw);
+        raw = util::to_value_with_node_id(node_id, &raw);
     }
     match string_to_value(data_type, &raw) {
         Ok(val) => Some(val),
@@ -289,9 +304,9 @@ fn get_value(
 
 fn build_variable(
     properties: &HashMap<String, String>,
-    node_id: i32,
-    index: i32,
-    subindex: Option<i32>,
+    node_id: u16,
+    index: u16,
+    subindex: Option<u8>,
 ) -> Result<Variable, String> {
     let parameter_name = properties
         .get("ParameterName")
@@ -317,16 +332,6 @@ fn build_variable(
 
     let min = get_value(&properties, "LowLimit", node_id, &dt);
     let max = get_value(&properties, "HighLimit", node_id, &dt);
-    //
-    // let min = util::result_to_option(string_to_value(
-    //     &dt,
-    //     properties.get("LowLimit").unwrap_or(&"".to_string()),
-    // ));
-    //
-    // let max = util::result_to_option(string_to_value(
-    //     &dt,
-    //     properties.get("HighLimit").unwrap_or(&"".to_string()),
-    // ));
 
     let default_value = get_value(&properties, "DefaultValue", node_id, &dt).unwrap();
     let parameter_value = get_value(&properties, "ParameterValue", node_id, &dt);
@@ -349,18 +354,21 @@ fn build_variable(
 }
 
 pub struct ObjectDirectory {
-    node_id: i32,
+    node_id: u16,
     index_to_object: HashMap<u16, ObjectType>,
     name_to_index: HashMap<String, u16>,
 }
 
 impl ObjectDirectory {
-    pub fn new(node_id: i32) -> Self {
-        ObjectDirectory {
+    pub fn new(node_id: u16, eds_content: &str) -> Self {
+        let mut od = ObjectDirectory {
             node_id,
             index_to_object: HashMap::new(),
             name_to_index: HashMap::new(),
-        }
+        };
+        od.load_from_content(eds_content)
+            .expect("Failed to load EDS content");
+        od
     }
 
     pub fn process_section(
@@ -384,7 +392,7 @@ impl ObjectDirectory {
                 7 => {
                     if index == 0x1017 {
                         let variable =
-                            build_variable(properties, self.node_id, index as i32, None)?;
+                            build_variable(properties, self.node_id, index as u16, None)?;
                         self.name_to_index.insert(variable.name.clone(), index);
                         self.index_to_object
                             .insert(index, ObjectType::Variable(variable));
@@ -460,6 +468,16 @@ impl ObjectDirectory {
         );
 
         Ok(())
+    }
+
+    pub fn get_varible(&self, index: u16, sub_index: u8) -> Option<&Variable> {
+        match self.index_to_object.get(&index) {
+            Some(ObjectType::Variable(var)) => Some(var),
+            _ => {
+                // TOOD(zephyr): Raise error, not support yet.
+                None
+            }
+        }
     }
 
     pub fn get_variable_by_name(&self, name: &str) -> Option<&Variable> {

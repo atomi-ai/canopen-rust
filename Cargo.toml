@@ -18,6 +18,7 @@ anyhow = "1.0"
 async-std = "1.12"
 lazy_static = "1.4"
 tokio = { version = "1", features = ["full"] }
+byteorder = "1.4"
 
 [features]
 default = ["linux"]

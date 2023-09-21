@@ -11,4 +11,4 @@ pub use multi_platform::sleep;
 pub mod object_directory;
 pub use object_directory::ObjectDirectory;
 
-mod util;
+pub mod util;

@@ -1,5 +1,5 @@
-mod testing_util;
-use testing_util as tu;
+mod testing;
+use testing::util as tu;
 
 use async_std::future::timeout;
 use canopen_rust::canopen;
@@ -41,9 +41,8 @@ async fn test_start_a_conode() {
     let read_task = client_socket.read_frame();
 
     thread::spawn(move || {
-        let node = canopen::Node::new(tu::INTERFACE_NAME);
+        let node = canopen::Node::new(tu::INTERFACE_NAME, 2, tu::EDS_PATH);
         node.run();
-        node.start_and_wait_until_ready();
     });
 
     // Wait for the expected msg

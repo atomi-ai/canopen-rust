@@ -1,20 +1,17 @@
+mod testing;
+
 #[cfg(test)]
 mod tests {
     use canopen_rust::object_directory as od;
-    use canopen_rust::object_directory::ByteConvertible;
     use canopen_rust::ObjectDirectory;
     use lazy_static::lazy_static;
     use std::panic;
 
-    const EDS_PATH: &str = "tests/fixtures/sample.eds";
-
     lazy_static! {
         static ref OD: ObjectDirectory = {
-            let mut od = ObjectDirectory::new(2);
-            let content = std::fs::read_to_string(EDS_PATH).expect("Failed to read EDS file");
-            od.load_from_content(&content)
-                .expect("Failed to load EDS content");
-            od
+            use crate::testing::util as tu;
+            let content = std::fs::read_to_string(tu::EDS_PATH).expect("Failed to read EDS file");
+            ObjectDirectory::new(2, &content)
         };
     }
 
@@ -33,9 +30,9 @@ mod tests {
         assert_eq!(var.index, 0x1017);
         assert_eq!(var.subindex, 0);
         assert_eq!(var.name, "Producer heartbeat time");
-        assert_eq!(var.data_type, od::DataType::UNSIGNED16);
+        assert_eq!(var.data_type, od::DataType::UNSIGNED32);
         assert_eq!(var.access_type, "rw");
-        assert_eq!(var.default_value.to::<u16>(), 0);
+        assert_eq!(var.default_value.to::<u32>(), 0x12345678);
     }
 
     // #[test]

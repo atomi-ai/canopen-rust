@@ -1,16 +1,19 @@
-use crate::object_directory::DataType;
 use regex::Regex;
+use socketcan::{CanFrame, EmbeddedFrame, Id};
 
 pub trait ParseRadix: std::str::FromStr {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, Self::Err>
-        where
-            Self: Sized;
+    where
+        Self: Sized;
 }
 
 macro_rules! impl_parse_radix_for {
     ($t:ty) => {
         impl ParseRadix for $t {
-            fn from_str_radix(s: &str, radix: u32) -> Result<Self, <Self as std::str::FromStr>::Err> {
+            fn from_str_radix(
+                s: &str,
+                radix: u32,
+            ) -> Result<Self, <Self as std::str::FromStr>::Err> {
                 <$t>::from_str_radix(s, radix)
             }
         }
@@ -38,11 +41,11 @@ pub fn parse_number<T: ParseRadix + Default>(s: &str) -> T {
 pub fn result_to_option<T, Err>(res: Result<T, Err>) -> Option<T> {
     match res {
         Ok(val) => Some(val),
-        Err(err) => None,
+        Err(_) => None,
     }
 }
 
-pub fn to_value_with_node_id(node_id: i32, data_type: &DataType, expression: &str) -> String {
+pub fn to_value_with_node_id(node_id: u16, expression: &str) -> String {
     // Replace $NODEID with the actual node_id
     let regex = Regex::new(r"\$NODEID").unwrap();
     let modified_expression = regex
@@ -57,4 +60,11 @@ pub fn to_value_with_node_id(node_id: i32, data_type: &DataType, expression: &st
 
     // Convert the evaluated sum to a string
     value_sum.to_string()
+}
+
+pub fn get_standard_can_id_from_frame(frame: &CanFrame) -> Option<u16> {
+    if let Id::Standard(sid) = frame.id() {
+        return Some(sid.as_raw());
+    }
+    None
 }
