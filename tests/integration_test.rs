@@ -1,8 +1,11 @@
 mod testing;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use testing::util as tu;
 
 use async_std::future::timeout;
-use canopen_rust::canopen;
+use canopen::node;
 use socketcan::async_io::CanSocket;
 use socketcan::{CanFrame, EmbeddedFrame, Socket, StandardId};
 use std::thread;
@@ -40,10 +43,20 @@ async fn test_start_a_conode() {
     let client_socket = CanSocket::open(tu::INTERFACE_NAME).unwrap();
     let read_task = client_socket.read_frame();
 
+    let is_running = Arc::new(AtomicBool::new(false));
+    let is_running_clone = is_running.clone();
     thread::spawn(move || {
-        let node = canopen::Node::new(tu::INTERFACE_NAME, 2, tu::EDS_PATH);
+        let content = std::fs::read_to_string(tu::EDS_PATH).expect("Failed to read EDS file");
+        let socket =
+            socketcan::CanSocket::open(tu::INTERFACE_NAME).expect("Failed to open CAN socket");
+        let mut node = node::Node::new(2, &content, Box::new(socket));
+        node.init();
+        is_running_clone.store(true, Ordering::Relaxed);
         node.run();
     });
+    while !is_running.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(100));
+    }
 
     // Wait for the expected msg
     let timeout_duration = Duration::from_secs(5);

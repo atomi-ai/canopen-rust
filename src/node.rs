@@ -1,46 +1,54 @@
 use crate::{sleep, util, ObjectDirectory};
 use core::sync::atomic::{AtomicBool, Ordering};
-use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket, StandardId};
+use embedded_can::{blocking::Can, Error, Frame, Id::Standard, StandardId};
 
-pub struct Node {
+pub struct Node<F, E>
+where
+    F: Frame,
+    E: Error,
+{
     node_id: u16,
-    socket: CanSocket,
-    is_running: AtomicBool,
+    can_network: Box<dyn Can<Frame = F, Error = E>>,
     object_directory: ObjectDirectory,
 }
 
-impl Node {
-    pub fn new(interface: &str, node_id: u16, eds_content: &str) -> Self {
-        let socket = socketcan::CanSocket::open(interface).expect("Failed to open CAN socket");
+impl<F, E> Node<F, E>
+where
+    F: Frame,
+    E: Error,
+{
+    pub fn new(
+        node_id: u16,
+        eds_content: &str,
+        can_network: Box<dyn Can<Frame = F, Error = E>>,
+    ) -> Self {
         let object_directory = ObjectDirectory::new(node_id, eds_content);
-
         Node {
             node_id,
-            socket,
+            can_network,
             object_directory,
-            is_running: AtomicBool::new(false),
         }
     }
 
-    fn process_sdo_expedite_upload(&self, node_id: u16, frame: CanFrame) {
+    fn process_sdo_expedite_upload(&mut self, node_id: u16, frame: &F) {
         let index = u16::from_le_bytes([frame.data()[1], frame.data()[2]]);
         let subindex = frame.data()[3];
 
         let var = self.object_directory.get_varible(index, subindex);
 
         // Craft a response. This will be much more nuanced in real applications.
-        let response = CanFrame::new(
+        let response = Frame::new(
             StandardId::new(0x580 | node_id).unwrap(),
             var.unwrap().to_packet(0x43).as_slice(),
         )
         .expect("Failed to create CAN frame");
 
-        self.socket
-            .write_frame(&response)
+        self.can_network
+            .transmit(&response)
             .expect("Failed to send CAN frame");
     }
 
-    fn process_sdo_request(&self, node_id: u16, frame: CanFrame) {
+    fn process_sdo_request(&mut self, node_id: u16, frame: &F) {
         let cmd = frame.data()[0];
         match cmd >> 5 {
             0x2 => {
@@ -53,8 +61,11 @@ impl Node {
         }
     }
 
-    pub fn process_one_frame(&self) {
-        let frame = self.socket.read_frame().expect("Failed to read CAN frame");
+    pub fn process_one_frame(&mut self) {
+        let frame = self
+            .can_network
+            .receive()
+            .expect("Failed to read CAN frame");
         let sid = util::get_standard_can_id_from_frame(&frame).unwrap();
         if sid & 0x7F != self.node_id {
             // ignore, not my packet.
@@ -62,7 +73,7 @@ impl Node {
         }
         match sid & 0xFF80 {
             0x600 => {
-                self.process_sdo_request(self.node_id, frame);
+                self.process_sdo_request(self.node_id, &frame);
             }
             _ => {
                 // TODO(zephyr): raise an error for unsupported requests.
@@ -70,26 +81,18 @@ impl Node {
         }
     }
 
-    pub fn run(&self) {
-        let ready_frame = CanFrame::new(StandardId::new(0x234).unwrap(), &[1, 2, 3, 5]).expect("");
-        self.socket
-            .write_frame(&ready_frame)
+    pub fn init(&mut self) {
+        let ready_frame = Frame::new(StandardId::new(0x234).unwrap(), &[1, 2, 3, 5]).expect("");
+        self.can_network
+            .transmit(&ready_frame)
             .expect("Failed to send CAN frame");
-        self.is_running.store(true, Ordering::Relaxed);
+    }
+
+    pub fn run(&mut self) {
         loop {
             self.process_one_frame();
             // TODO(zephyr): not a good idea to sleep(10) mill-seconds, let's figure out another way in the future.
             sleep(10);
         }
-    }
-
-    pub fn wait_until_ready(&self) {
-        while !self.is_running.load(Ordering::Relaxed) {}
-    }
-}
-
-impl Drop for Node {
-    fn drop(&mut self) {
-        self.is_running.store(false, Ordering::Relaxed);
     }
 }

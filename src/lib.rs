@@ -3,7 +3,7 @@
 //   cargo build --target x86_64-unknown-linux-gnu
 
 #![cfg_attr(not(feature = "linux"), no_std)]
-pub mod canopen;
+pub mod node;
 
 mod multi_platform;
 pub use multi_platform::sleep;

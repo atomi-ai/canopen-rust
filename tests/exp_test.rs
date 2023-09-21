@@ -4,10 +4,11 @@ mod testing;
 
 use async_std::future::timeout;
 use async_std::task;
-use canopen_rust::canopen;
+use canopen::node;
 use socketcan::async_io::CanSocket;
-use socketcan::EmbeddedFrame;
 use socketcan::Frame;
+use socketcan::{EmbeddedFrame, Socket};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -28,16 +29,22 @@ impl TestContext {
         let s = CanSocket::open(tu::INTERFACE_NAME).unwrap();
         let read_task = s.read_frame();
 
-        let node = canopen::Node::new(tu::INTERFACE_NAME, 2, &content);
-        let shared_node = Arc::new(node);
-        let clone_node = Arc::clone(&shared_node);
+        let socket =
+            socketcan::CanSocket::open(tu::INTERFACE_NAME).expect("Failed to open CAN socket");
+
+        let is_running = Arc::new(AtomicBool::new(false));
+        let is_running_clone = is_running.clone();
         let node_thread = thread::spawn(move || {
-            clone_node.run();
+            let mut node = node::Node::new(2, &content, Box::new(socket));
+            node.init();
+            is_running_clone.store(true, Ordering::Relaxed);
+            node.run();
         });
-        shared_node.wait_until_ready();
+        while !is_running.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(100));
+        }
 
         let msg = timeout(Duration::from_secs(3), read_task).await??;
-
         if msg.raw_id() != 0x234 || msg.data() != &[0x01, 0x02, 0x03, 0x05] {
             panic!(
                 "Received unexpected CanFrame: {}",
@@ -61,10 +68,8 @@ lazy_static! {
 
 #[test]
 fn test_sdo_request() {
-    // 获取已经初始化的TestContext
-    let context = CONTEXT.lock().unwrap();
+    let _context = CONTEXT.lock().unwrap();
 
-    // 创建SDO客户端
     let mut client = SDOClient::new(tu::INTERFACE_NAME, 2); // 2作为node_id
 
     // 使用SDO客户端发送expedited upload请求

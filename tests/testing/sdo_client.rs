@@ -1,6 +1,5 @@
 use byteorder::{ByteOrder, LittleEndian};
-use canopen_rust::object_directory::Value;
-use canopen_rust::util;
+use canopen::{object_directory::Value, util};
 use socketcan::Id::Standard;
 use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket, StandardId};
 

@@ -1,5 +1,5 @@
 [package]
-name = "canopen_rust"
+name = "canopen"
 version = "0.1.0"
 authors = ["Zephyr Guo <zephyr@atomi.ai>"]
 edition = "2021"
@@ -7,18 +7,19 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rp2040-hal = { version = "0.9", optional = true }
-socketcan = { git = "https://github.com/socketcan-rs/socketcan-rs", branch = "master", features = ["async-std"]}
+embedded-can = "0.4"
+hashbrown = "0.14"
 ini_core = "0.2"
 regex = "1"
-hashbrown = "0.14"
+rp2040-hal = { version = "0.9", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0"
 async-std = "1.12"
-lazy_static = "1.4"
-tokio = { version = "1", features = ["full"] }
 byteorder = "1.4"
+lazy_static = "1.4"
+socketcan = { git = "https://github.com/socketcan-rs/socketcan-rs", branch = "master", features = ["async-std"]}
+tokio = { version = "1", features = ["full"] }
 
 [features]
 default = ["linux"]

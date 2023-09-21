@@ -2,8 +2,8 @@ mod testing;
 
 #[cfg(test)]
 mod tests {
-    use canopen_rust::object_directory as od;
-    use canopen_rust::ObjectDirectory;
+    use canopen::object_directory as od;
+    use canopen::ObjectDirectory;
     use lazy_static::lazy_static;
     use std::panic;
 

@@ -1,5 +1,5 @@
+use embedded_can::{Frame, Id};
 use regex::Regex;
-use socketcan::{CanFrame, EmbeddedFrame, Id};
 
 pub trait ParseRadix: std::str::FromStr {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, Self::Err>
@@ -62,7 +62,7 @@ pub fn to_value_with_node_id(node_id: u16, expression: &str) -> String {
     value_sum.to_string()
 }
 
-pub fn get_standard_can_id_from_frame(frame: &CanFrame) -> Option<u16> {
+pub fn get_standard_can_id_from_frame<F: Frame>(frame: &F) -> Option<u16> {
     if let Id::Standard(sid) = frame.id() {
         return Some(sid.as_raw());
     }
