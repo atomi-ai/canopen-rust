@@ -17,8 +17,8 @@ use testing::sdo_client::SDOClient;
 use testing::util as tu;
 
 struct TestContext {
-    socket: CanSocket,
-    node_thread: thread::JoinHandle<()>,
+    _socket: CanSocket,
+    _node_thread: thread::JoinHandle<()>,
 }
 
 impl TestContext {
@@ -53,8 +53,8 @@ impl TestContext {
         }
 
         Ok(TestContext {
-            socket: s,
-            node_thread,
+            _socket: s,
+            _node_thread: node_thread,
         })
     }
 }
@@ -70,13 +70,13 @@ lazy_static! {
 fn test_sdo_request() {
     let _context = CONTEXT.lock().unwrap();
 
-    let mut client = SDOClient::new(tu::INTERFACE_NAME, 2); // 2作为node_id
+    let mut client = SDOClient::new(tu::INTERFACE_NAME);
 
-    // 使用SDO客户端发送expedited upload请求
+    // SDO expedite upload, and wait for the response.
     let response_value = client.expedited_upload(2, 0x1017, 0);
     println!("xfguo: got response: {:?}", response_value);
 
-    // 验证我们收到了预期的值
+    // Validate the result.
     assert!(response_value.is_some());
     assert_eq!(response_value.unwrap().data, vec![0x78, 0x56, 0x34, 0x12]);
 }

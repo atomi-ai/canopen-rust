@@ -1,7 +1,9 @@
-use embedded_can::{Frame, Id};
-use regex::Regex;
+use crate::prelude::*;
 
-pub trait ParseRadix: std::str::FromStr {
+use core::str::FromStr;
+use embedded_can::{Frame, Id};
+
+pub trait ParseRadix: FromStr {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, Self::Err>
     where
         Self: Sized;
@@ -10,10 +12,7 @@ pub trait ParseRadix: std::str::FromStr {
 macro_rules! impl_parse_radix_for {
     ($t:ty) => {
         impl ParseRadix for $t {
-            fn from_str_radix(
-                s: &str,
-                radix: u32,
-            ) -> Result<Self, <Self as std::str::FromStr>::Err> {
+            fn from_str_radix(s: &str, radix: u32) -> Result<Self, <Self as FromStr>::Err> {
                 <$t>::from_str_radix(s, radix)
             }
         }
@@ -47,10 +46,7 @@ pub fn result_to_option<T, Err>(res: Result<T, Err>) -> Option<T> {
 
 pub fn to_value_with_node_id(node_id: u16, expression: &str) -> String {
     // Replace $NODEID with the actual node_id
-    let regex = Regex::new(r"\$NODEID").unwrap();
-    let modified_expression = regex
-        .replace_all(expression, &node_id.to_string())
-        .to_string();
+    let modified_expression = expression.replace("$NODEID", &node_id.to_string());
 
     // Evaluate simple arithmetic expressions
     let value_sum: i64 = modified_expression
@@ -67,4 +63,24 @@ pub fn get_standard_can_id_from_frame<F: Frame>(frame: &F) -> Option<u16> {
         return Some(sid.as_raw());
     }
     None
+}
+
+fn is_hex_char(c: char) -> bool {
+    ('0'..='9').contains(&c) || ('a'..='f').contains(&c) || ('A'..='F').contains(&c)
+}
+
+pub fn is_top(s: &str) -> bool {
+    s.len() == 4 && s.chars().all(is_hex_char)
+}
+
+pub fn is_sub(s: &str) -> Option<(&str, &str)> {
+    if s.len() > 7 && s[4..7].eq_ignore_ascii_case("sub") && s[0..4].chars().all(is_hex_char) {
+        Some((&s[0..4], &s[7..]))
+    } else {
+        None
+    }
+}
+
+pub fn is_name(s: &str) -> bool {
+    s.ends_with("Name") && s[0..4].chars().all(is_hex_char)
 }

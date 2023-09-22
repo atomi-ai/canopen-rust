@@ -1,8 +1,8 @@
 mod testing;
 
+use crate::testing::util as tu;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use testing::util as tu;
 
 use async_std::future::timeout;
 use canopen::node;

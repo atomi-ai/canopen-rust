@@ -3,15 +3,14 @@ mod testing;
 #[cfg(test)]
 mod tests {
     use canopen::object_directory as od;
-    use canopen::ObjectDirectory;
     use lazy_static::lazy_static;
     use std::panic;
 
     lazy_static! {
-        static ref OD: ObjectDirectory = {
+        static ref OD: od::ObjectDirectory = {
             use crate::testing::util as tu;
             let content = std::fs::read_to_string(tu::EDS_PATH).expect("Failed to read EDS file");
-            ObjectDirectory::new(2, &content)
+            od::ObjectDirectory::new(2, &content)
         };
     }
 
@@ -30,7 +29,7 @@ mod tests {
         assert_eq!(var.index, 0x1017);
         assert_eq!(var.subindex, 0);
         assert_eq!(var.name, "Producer heartbeat time");
-        assert_eq!(var.data_type, od::DataType::UNSIGNED32);
+        assert_eq!(var.data_type, od::DataType::Unsigned32);
         assert_eq!(var.access_type, "rw");
         assert_eq!(var.default_value.to::<u32>(), 0x12345678);
     }

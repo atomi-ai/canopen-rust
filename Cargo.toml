@@ -10,8 +10,6 @@ edition = "2021"
 embedded-can = "0.4"
 hashbrown = "0.14"
 ini_core = "0.2"
-regex = "1"
-rp2040-hal = { version = "0.9", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0"
@@ -22,9 +20,5 @@ socketcan = { git = "https://github.com/socketcan-rs/socketcan-rs", branch = "ma
 tokio = { version = "1", features = ["full"] }
 
 [features]
-default = ["linux"]
-linux = []
-rp2040 = ["rp2040-hal"]
 
 [workspace]
-# 如果你想在此项目中包含多个包，你可以定义一个工作区。

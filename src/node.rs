@@ -1,6 +1,8 @@
-use crate::{sleep, util, ObjectDirectory};
-use core::sync::atomic::{AtomicBool, Ordering};
-use embedded_can::{blocking::Can, Error, Frame, Id::Standard, StandardId};
+use crate::object_directory::ObjectDirectory;
+use crate::prelude::*;
+use crate::util;
+
+use embedded_can::{blocking::Can, Error, Frame, StandardId};
 
 pub struct Node<F, E>
 where
@@ -91,7 +93,6 @@ where
     pub fn run(&mut self) {
         loop {
             self.process_one_frame();
-            // TODO(zephyr): not a good idea to sleep(10) mill-seconds, let's figure out another way in the future.
             sleep(10);
         }
     }

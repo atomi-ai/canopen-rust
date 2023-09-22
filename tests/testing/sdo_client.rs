@@ -1,6 +1,5 @@
 use byteorder::{ByteOrder, LittleEndian};
 use canopen::{object_directory::Value, util};
-use socketcan::Id::Standard;
 use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket, StandardId};
 
 pub trait CANNetwork: 'static {
@@ -26,17 +25,16 @@ impl CANNetwork for CanSocket {
 }
 
 pub struct SDOClient {
+    // TODO(zephyr): replace with embedded_can::blocking::Can, CanSocket implements it by default.
     network: Box<dyn CANNetwork>,
-    node_id: u32,
 }
 
 impl SDOClient {
-    pub fn new(interface: &str, node_id: u32) -> Self {
+    pub fn new(interface: &str) -> Self {
         SDOClient {
             network: Box::new(
                 socketcan::CanSocket::open(interface).expect("Failed to open CAN socket"),
             ),
-            node_id,
         }
     }
 
