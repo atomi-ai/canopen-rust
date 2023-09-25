@@ -7,6 +7,7 @@
 pub mod data_type;
 pub mod node;
 pub mod object_directory;
+pub mod sdo_client;
 pub mod util;
 pub mod value;
 

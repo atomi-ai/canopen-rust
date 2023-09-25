@@ -1,24 +1,16 @@
 use crate::object_directory::ObjectDirectory;
 use crate::prelude::*;
-use crate::util;
+use crate::{util, xprintln};
 
 use embedded_can::{blocking::Can, Error, Frame, StandardId};
 
-pub struct Node<F, E>
-where
-    F: Frame,
-    E: Error,
-{
+pub struct Node<F: Frame + Debug, E: Error> {
     node_id: u16,
     can_network: Box<dyn Can<Frame = F, Error = E>>,
     object_directory: ObjectDirectory,
 }
 
-impl<F, E> Node<F, E>
-where
-    F: Frame,
-    E: Error,
-{
+impl<F: Frame + Debug, E: Error> Node<F, E> {
     pub fn new(
         node_id: u16,
         eds_content: &str,
@@ -48,6 +40,7 @@ where
         self.can_network
             .transmit(&response)
             .expect("Failed to send CAN frame");
+        xprintln!("[node] sent a frame : {:?}", frame);
     }
 
     fn process_sdo_request(&mut self, node_id: u16, frame: &F) {
@@ -64,10 +57,12 @@ where
     }
 
     pub fn process_one_frame(&mut self) {
+        xprintln!("[node] wait for a frame");
         let frame = self
             .can_network
             .receive()
             .expect("Failed to read CAN frame");
+        xprintln!("[node] got frame: {:?}", frame);
         let sid = util::get_standard_can_id_from_frame(&frame).unwrap();
         if sid & 0x7F != self.node_id {
             // ignore, not my packet.

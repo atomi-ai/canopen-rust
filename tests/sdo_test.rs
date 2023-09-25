@@ -5,6 +5,7 @@ mod testing;
 use async_std::future::timeout;
 use async_std::task;
 use canopen::node;
+use canopen::sdo_client::SDOClient;
 use socketcan::async_io::CanSocket;
 use socketcan::Frame;
 use socketcan::{EmbeddedFrame, Socket};
@@ -13,7 +14,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
-use testing::sdo_client::SDOClient;
 use testing::util as tu;
 
 struct TestContext {
@@ -70,7 +70,9 @@ lazy_static! {
 fn test_sdo_request() {
     let _context = CONTEXT.lock().unwrap();
 
-    let mut client = SDOClient::new(tu::INTERFACE_NAME);
+    let mut client = SDOClient::new(Box::new(
+        socketcan::CanSocket::open(tu::INTERFACE_NAME).expect("Failed to open CAN socket"),
+    ));
 
     // SDO expedite upload, and wait for the response.
     let response_value = client.expedited_upload(2, 0x1017, 0);

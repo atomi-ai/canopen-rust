@@ -107,6 +107,13 @@ pub fn is_name(s: &str) -> Option<u16> {
         .flatten()
 }
 
+pub fn get_index_from_can_frame<F: Frame>(frame: &F) -> (u16, u8) {
+    (
+        u16::from_le_bytes([frame.data()[1], frame.data()[2]]),
+        frame.data()[3],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::to_value_with_node_id;

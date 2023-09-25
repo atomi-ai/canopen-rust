@@ -3,7 +3,6 @@ use socketcan::Frame;
 pub const INTERFACE_NAME: &str = "vcan0";
 pub const EDS_PATH: &str = "tests/fixtures/sample.eds";
 
-#[allow(dead_code)]
 pub fn frame_to_string<F: Frame>(frame: &F) -> String {
     let id = frame.raw_id();
     let data_string = frame

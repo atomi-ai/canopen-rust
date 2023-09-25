@@ -2,6 +2,7 @@
 mod std_items {
     pub use std::boxed::Box;
     pub use std::collections::HashMap;
+    pub use std::fmt::Debug;
     pub use std::fmt::Error;
     pub use std::*;
 
@@ -18,7 +19,10 @@ pub use std_items::*;
 mod no_std_items {
     extern crate alloc;
     pub use alloc::boxed::Box;
+    pub use alloc::fmt::Debug;
+    pub use alloc::format;
     pub use alloc::string::{String, ToString};
+    pub use alloc::vec;
     pub use alloc::vec::Vec;
     pub use core::fmt::Error;
     pub use core::*;
