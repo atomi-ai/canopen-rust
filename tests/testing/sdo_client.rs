@@ -1,5 +1,6 @@
 use byteorder::{ByteOrder, LittleEndian};
-use canopen::{object_directory::Value, util};
+use canopen::util;
+use canopen::value::Value;
 use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket, StandardId};
 
 pub trait CANNetwork: 'static {

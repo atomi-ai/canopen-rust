@@ -4,8 +4,10 @@
 
 #![cfg_attr(all(target_arch = "arm", target_os = "none"), no_std)]
 
+pub mod data_type;
 pub mod node;
 pub mod object_directory;
 pub mod util;
+pub mod value;
 
 mod prelude;

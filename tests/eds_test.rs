@@ -2,15 +2,17 @@ mod testing;
 
 #[cfg(test)]
 mod tests {
-    use canopen::object_directory as od;
+    use canopen::data_type::DataType;
+    use canopen::object_directory::{obj_to_record, obj_to_variable, ObjectDirectory, ObjectType};
     use lazy_static::lazy_static;
     use std::panic;
+    use std::sync::Mutex;
 
     lazy_static! {
-        static ref OD: od::ObjectDirectory = {
+        static ref OD: Mutex<ObjectDirectory> = {
             use crate::testing::util as tu;
             let content = std::fs::read_to_string(tu::EDS_PATH).expect("Failed to read EDS file");
-            od::ObjectDirectory::new(2, &content)
+            Mutex::new(ObjectDirectory::new(2, &content))
         };
     }
 
@@ -20,29 +22,175 @@ mod tests {
         panic::set_hook(Box::new(|info| {
             eprintln!("custom panic handler: {:?}", info);
         }));
+        let od = OD.lock().unwrap();
 
-        let var = OD
-            .get_variable_by_name("Producer heartbeat time")
-            .expect("Variable not found");
+        let var = obj_to_variable(
+            od.get_object_by_name("Producer heartbeat time")
+                .expect("Object not found"),
+        )
+        .expect("Not a variable");
 
         // 对于C++中的属性检查，我们在Rust中使用assert_eq!宏
         assert_eq!(var.index, 0x1017);
-        assert_eq!(var.subindex, 0);
+        assert_eq!(var.sub_index, 0);
         assert_eq!(var.name, "Producer heartbeat time");
-        assert_eq!(var.data_type, od::DataType::Unsigned32);
+        assert_eq!(var.data_type, DataType::Unsigned32);
         assert_eq!(var.access_type, "rw");
         assert_eq!(var.default_value.to::<u32>(), 0x12345678);
     }
 
-    // #[test]
-    // fn test_calculate_with_node_id() {
-    //     assert_eq!(
-    //         Data::INTEGER32(102),
-    //         to_int_with_node_id(2, Data::INTEGER32, "$NODEID+100")
-    //     );
-    //     // ... rest of your assertions ...
-    // }
+    #[test]
+    fn test_relative_variable() {
+        let od = OD.lock().unwrap();
+        let var = obj_to_record(
+            od.get_object_by_name("Receive PDO 0 Communication Parameter")
+                .unwrap(),
+        )
+        .unwrap()
+        .get_variable_by_name("COB-ID use by RPDO 1")
+        .expect("Expected to find the variable");
+        assert_eq!(var.default_value.to::<u32>(), 512 + od.node_id as u32); // 假设default_value是u32类型
+    }
 
-    // Additional helper functions like to_int_with_node_id should also be defined here.
-    // ...
+    #[test]
+    fn test_record() {
+        let od = OD.lock().unwrap();
+        let obj = od
+            .get_object_by_name("Identity object")
+            .expect("Identity object not found");
+        if let ObjectType::Record(record) = obj {
+            assert_eq!(record.name, "Identity object");
+            assert_eq!(record.index, 0x1018);
+            assert_eq!(record.index_to_variable.len(), 5);
+
+            let variable = record
+                .name_to_index
+                .get("Vendor-ID")
+                .and_then(|&idx| record.index_to_variable.get(&idx))
+                .expect("Variable not found");
+
+            assert_eq!(variable.name, "Vendor-ID");
+            assert_eq!(variable.index, 0x1018);
+            assert_eq!(variable.sub_index, 1);
+            assert_eq!(variable.data_type, DataType::Unsigned32);
+            assert_eq!(variable.access_type, "ro");
+        } else {
+            panic!("Expected a Record named 'Identity object'");
+        }
+    }
+
+    #[test]
+    fn test_record_with_limits() {
+        let mut od = OD.lock().unwrap();
+        let int8 = od
+            .get_variable(0x3020, 0)
+            .expect("Expected to find the variable");
+        assert_eq!(int8.min.as_ref().unwrap().to::<i8>(), 0);
+        assert_eq!(int8.max.as_ref().unwrap().to::<i8>(), 127);
+
+        let uint8 = od
+            .get_variable(0x3021, 0)
+            .expect("Expected to find the variable");
+        assert_eq!(uint8.min.as_ref().unwrap().to::<u8>(), 2);
+        assert_eq!(uint8.max.as_ref().unwrap().to::<u8>(), 10);
+
+        let int32 = od
+            .get_variable(0x3030, 0)
+            .expect("Expected to find the variable");
+        assert_eq!(int32.min.as_ref().unwrap().to::<i32>(), -1);
+        assert_eq!(int32.max.as_ref().unwrap().to::<i32>(), 0);
+
+        // 获取int64
+        let int64 = od
+            .get_variable(0x3040, 0)
+            .expect("Expected to find the variable");
+        assert_eq!(
+            int64.min.as_ref().unwrap().to::<i64>(),
+            -9223372036854775799
+        );
+        assert_eq!(int64.max.as_ref().unwrap().to::<i64>(), 10);
+    }
+
+    #[test]
+    fn test_array_compact_sub_obj() {
+        let mut od = OD.lock().unwrap();
+
+        if let ObjectType::Array(array_obj) = od.get_object(0x1003).expect("Array not found") {
+            assert_eq!(array_obj.index, 0x1003);
+            assert_eq!(array_obj.name, "Pre-defined error field");
+        } else {
+            panic!("Expect array at index 0x1003");
+        }
+
+        if let Some(var) = od.get_variable(0x1003, 5) {
+            assert_eq!(var.name, "Pre-defined error field_5");
+            assert_eq!(var.index, 0x1003);
+            assert_eq!(var.sub_index, 5);
+            assert_eq!(var.data_type, DataType::Unsigned32);
+            assert_eq!(var.access_type, "ro");
+        } else {
+            panic!("Expected an Array at index 0x1003");
+        }
+    }
+
+    #[test]
+    fn test_explicit_name_subobj() {
+        let mut od = OD.lock().unwrap();
+        let array = od.get_object(0x3004).expect("Array not found");
+
+        if let ObjectType::Array(array_obj) = &array {
+            assert_eq!(array_obj.name, "Sensor Status");
+        } else {
+            panic!("Expected an Array at index 0x3004");
+        }
+
+        if let Some(var) = od.get_variable(0x3004, 1) {
+            assert_eq!(var.name, "Sensor Status 1");
+        } else {
+            panic!("Expected an Variable at (0x3004, 1)");
+        }
+
+        if let Some(var) = od.get_variable(0x3004, 3) {
+            assert_eq!(var.name, "Sensor Status 3");
+            assert_eq!(var.default_value.to::<u16>(), 3);
+        } else {
+        }
+    }
+
+    #[test]
+    fn test_parameter_name_with_percent() {
+        let od = OD.lock().unwrap();
+        let array = od.get_object(0x3003).expect("Array not found");
+
+        if let ObjectType::Array(array_obj) = &array {
+            assert_eq!(array_obj.name, "Valve % open");
+        } else {
+            panic!("Expected an Array at index 0x3003");
+        }
+    }
+
+    #[test]
+    fn test_compact_subobj_parameter_name_with_percent() {
+        let od = OD.lock().unwrap();
+        let array = od.get_object(0x3006).expect("Array not found");
+
+        if let ObjectType::Array(array_obj) = &array {
+            assert_eq!(array_obj.name, "Valve 1 % Open");
+        } else {
+            panic!("Expected an Array at index 0x3006");
+        }
+    }
+
+    #[test]
+    fn test_sub_index_with_capital_s() {
+        let od = OD.lock().unwrap();
+        let record = od.get_object(0x3010).expect("Record not found");
+
+        if let ObjectType::Record(record_obj) = &record {
+            let sub_obj = record_obj.get_variable(0).expect("Sub-object not found");
+            assert_eq!(sub_obj.name, "Temperature");
+        } else {
+            panic!("Expected a Record at index 0x3010");
+        }
+    }
 }

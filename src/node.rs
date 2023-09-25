@@ -36,7 +36,7 @@ where
         let index = u16::from_le_bytes([frame.data()[1], frame.data()[2]]);
         let subindex = frame.data()[3];
 
-        let var = self.object_directory.get_varible(index, subindex);
+        let var = self.object_directory.get_variable(index, subindex);
 
         // Craft a response. This will be much more nuanced in real applications.
         let response = Frame::new(
