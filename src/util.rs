@@ -66,7 +66,14 @@ pub fn to_value_with_node_id(node_id: u16, expression: &str) -> String {
     // Evaluate simple arithmetic expressions
     let value_sum: i64 = modified_expression
         .split('+')
-        .filter_map(|s| s.trim().parse::<i64>().ok())
+        .filter_map(|s| {
+            let s_trimmed = s.trim();
+            if s_trimmed.starts_with("0x") || s_trimmed.starts_with("0X") {
+                i64::from_str_radix(&s_trimmed[2..], 16).ok()
+            } else {
+                s_trimmed.parse::<i64>().ok()
+            }
+        })
         .sum();
 
     // Convert the evaluated sum to a string
@@ -128,6 +135,7 @@ mod tests {
         assert_eq!(to_value_with_node_id(2, "$NODEID + 100 + 200"), "302");
         assert_eq!(to_value_with_node_id(1234, "$NODEID + 100 + 200"), "1534");
         assert_eq!(to_value_with_node_id(2, "No arithmetic here"), "0");
+        assert_eq!(to_value_with_node_id(2, "$NODEID+0x600"), "1538");
     }
 
     #[test]

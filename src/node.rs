@@ -2,6 +2,7 @@ use crate::object_directory::ObjectDirectory;
 use crate::prelude::*;
 use crate::{util, xprintln};
 
+use crate::error::CanAbortCode;
 use embedded_can::{blocking::Can, Error, Frame, StandardId};
 
 pub struct Node<F: Frame + Debug, E: Error> {
@@ -24,57 +25,94 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         }
     }
 
-    fn process_sdo_expedite_upload(&mut self, node_id: u16, frame: &F) {
-        let index = u16::from_le_bytes([frame.data()[1], frame.data()[2]]);
-        let subindex = frame.data()[3];
-
-        let var = self.object_directory.get_variable(index, subindex);
-
-        // Craft a response. This will be much more nuanced in real applications.
-        let response = Frame::new(
-            StandardId::new(0x580 | node_id).unwrap(),
-            var.unwrap().to_packet(0x43).as_slice(),
+    fn create_error_frame(&self, error_code: CanAbortCode, index: u16, sub_index: u8) -> F {
+        let mut packet = Vec::new();
+        packet.push(0x80);
+        packet.push((index & 0xFF) as u8);
+        packet.push((index >> 8) as u8);
+        packet.push(sub_index);
+        let code_bytes = error_code.code().to_le_bytes();
+        packet.extend_from_slice(&code_bytes);
+        Frame::new(
+            StandardId::new(0x580 | self.node_id).unwrap(),
+            packet.as_slice(),
         )
-        .expect("Failed to create CAN frame");
-
-        self.can_network
-            .transmit(&response)
-            .expect("Failed to send CAN frame");
-        xprintln!("[node] sent a frame : {:?}", frame);
+        .unwrap()
     }
 
-    fn process_sdo_request(&mut self, node_id: u16, frame: &F) {
-        let cmd = frame.data()[0];
-        match cmd >> 5 {
-            0x2 => {
-                // upload
-                self.process_sdo_expedite_upload(node_id, frame);
-            }
-            _ => {
-                // TODO(zephyr): raise an error for unsupported requests.
-            }
+    fn process_sdo_expedite_upload(
+        &mut self,
+        index: u16,
+        sub_index: u8,
+    ) -> Result<F, CanAbortCode> {
+        let var = self.object_directory.get_variable(index, sub_index)?;
+        generate_frame(
+            0x580 | self.node_id,
+            0x43,
+            index,
+            sub_index,
+            &var.default_value.data,
+        )
+    }
+
+    fn process_sdo_expedite_downad(
+        &mut self,
+        index: u16,
+        sub_index: u8,
+        req: &F,
+    ) -> Result<F, CanAbortCode> {
+        let len = 4 - (&req.data()[0] >> 2 & 0x3);
+        match self
+            .object_directory
+            .set_value(index, sub_index, &req.data()[4..(4 + len as usize)])
+        {
+            Err(code) => Err(code),
+            Ok(_) => generate_frame(
+                0x580 | self.node_id,
+                0x60,
+                index,
+                sub_index,
+                &vec![0, 0, 0, 0],
+            ),
         }
     }
 
-    pub fn process_one_frame(&mut self) {
-        xprintln!("[node] wait for a frame");
-        let frame = self
-            .can_network
-            .receive()
-            .expect("Failed to read CAN frame");
-        xprintln!("[node] got frame: {:?}", frame);
+    fn command_dispatch(&mut self, frame: &F) -> F {
+        let cmd = frame.data()[0];
+        let index = u16::from_le_bytes([frame.data()[1], frame.data()[2]]);
+        let sub_index = frame.data()[3];
+        match cmd >> 5 {
+            0x1 => {
+                // download (or write)
+                match self.process_sdo_expedite_downad(index, sub_index, frame) {
+                    Ok(frame) => frame,
+                    Err(code) => self.create_error_frame(code, index, sub_index),
+                }
+            }
+            0x2 => {
+                // upload (or read)
+                match self.process_sdo_expedite_upload(index, sub_index) {
+                    Ok(response_frame) => response_frame,
+                    Err(error_code) => self.create_error_frame(error_code, index, sub_index),
+                }
+            }
+            _ => self.create_error_frame(
+                CanAbortCode::CommandSpecifierNotValidOrUnknown,
+                index,
+                sub_index,
+            ),
+        }
+    }
+
+    pub fn communication_object_dispatch(&mut self, frame: F) -> Option<F> {
         let sid = util::get_standard_can_id_from_frame(&frame).unwrap();
         if sid & 0x7F != self.node_id {
             // ignore, not my packet.
-            return;
+            return None;
         }
         match sid & 0xFF80 {
-            0x600 => {
-                self.process_sdo_request(self.node_id, &frame);
-            }
-            _ => {
-                // TODO(zephyr): raise an error for unsupported requests.
-            }
+            0x600 => Some(self.command_dispatch(&frame)),
+            _ => None,
         }
     }
 
@@ -87,8 +125,51 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
 
     pub fn run(&mut self) {
         loop {
-            self.process_one_frame();
+            xprintln!("[node] wait for a frame");
+            let frame = self
+                .can_network
+                .receive()
+                .expect("Failed to read CAN frame");
+            xprintln!("[node] got frame: {:?}", frame);
+
+            if let Some(response) = self.communication_object_dispatch(frame) {
+                xprintln!("[node] to send reply : {:?}", response);
+                self.can_network
+                    .transmit(&response)
+                    .expect("Failed to send CAN frame");
+                xprintln!("[node] sent a frame : {:?}", response);
+            }
             sleep(10);
         }
     }
+}
+
+fn generate_frame<F: Frame + Debug>(
+    can_id: u16,
+    base_cmd: u8,
+    index: u16,
+    sub_index: u8,
+    data: &Vec<u8>,
+) -> Result<F, CanAbortCode> {
+    // Verify the data length
+    if data.len() > 4 {
+        todo!();
+        // return Err(CanAbortCode::DataTransferOrStoreFailed);
+    }
+
+    let mut packet = Vec::new();
+    packet.push(base_cmd | ((4 - data.len() as u8) << 2));
+    packet.push((index & 0xff) as u8);
+    packet.push((index >> 8) as u8);
+    packet.push(sub_index);
+    packet.extend_from_slice(data.as_slice());
+    // padding data with zeros to 8-byte.
+    while packet.len() < 8 {
+        packet.push(0);
+    }
+
+    let response = Frame::new(StandardId::new(can_id).unwrap(), packet.as_slice())
+        .ok_or(CanAbortCode::GeneralError)?;
+
+    Ok(response)
 }

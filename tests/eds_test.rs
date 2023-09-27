@@ -1,18 +1,20 @@
 mod testing;
 
 #[cfg(test)]
-mod tests {
+mod eds_tests {
     use canopen::data_type::DataType;
-    use canopen::object_directory::{obj_to_record, obj_to_variable, ObjectDirectory, ObjectType};
+    use canopen::object_directory::{
+        obj_to_record, obj_to_variable, AccessType, ObjectDirectory, ObjectType,
+    };
     use lazy_static::lazy_static;
     use std::panic;
     use std::sync::Mutex;
 
     lazy_static! {
-        static ref OD: Mutex<ObjectDirectory> = {
+        static ref EDS_DATA: Mutex<String> = {
             use crate::testing::util as tu;
-            let content = std::fs::read_to_string(tu::EDS_PATH).expect("Failed to read EDS file");
-            Mutex::new(ObjectDirectory::new(2, &content))
+            Mutex::new(std::fs::read_to_string(tu::EDS_PATH).expect("Failed to read EDS file"))
+            // Mutex::new(ObjectDirectory::new(2, &content))
         };
     }
 
@@ -22,8 +24,7 @@ mod tests {
         panic::set_hook(Box::new(|info| {
             eprintln!("custom panic handler: {:?}", info);
         }));
-        let od = OD.lock().unwrap();
-
+        let od = ObjectDirectory::new(2, &EDS_DATA.lock().unwrap());
         let var = obj_to_variable(
             od.get_object_by_name("Producer heartbeat time")
                 .expect("Object not found"),
@@ -35,13 +36,13 @@ mod tests {
         assert_eq!(var.sub_index, 0);
         assert_eq!(var.name, "Producer heartbeat time");
         assert_eq!(var.data_type, DataType::Unsigned32);
-        assert_eq!(var.access_type, "rw");
+        assert_eq!(var.access_type, AccessType::new(true, true));
         assert_eq!(var.default_value.to::<u32>(), 0x12345678);
     }
 
     #[test]
     fn test_relative_variable() {
-        let od = OD.lock().unwrap();
+        let od = ObjectDirectory::new(2, &EDS_DATA.lock().unwrap());
         let var = obj_to_record(
             od.get_object_by_name("Receive PDO 0 Communication Parameter")
                 .unwrap(),
@@ -54,7 +55,7 @@ mod tests {
 
     #[test]
     fn test_record() {
-        let od = OD.lock().unwrap();
+        let od = ObjectDirectory::new(2, &EDS_DATA.lock().unwrap());
         let obj = od
             .get_object_by_name("Identity object")
             .expect("Identity object not found");
@@ -73,7 +74,7 @@ mod tests {
             assert_eq!(variable.index, 0x1018);
             assert_eq!(variable.sub_index, 1);
             assert_eq!(variable.data_type, DataType::Unsigned32);
-            assert_eq!(variable.access_type, "ro");
+            assert_eq!(variable.access_type, AccessType::new(true, false));
         } else {
             panic!("Expected a Record named 'Identity object'");
         }
@@ -81,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_record_with_limits() {
-        let mut od = OD.lock().unwrap();
+        let mut od = ObjectDirectory::new(2, &EDS_DATA.lock().unwrap());
         let int8 = od
             .get_variable(0x3020, 0)
             .expect("Expected to find the variable");
@@ -113,30 +114,31 @@ mod tests {
 
     #[test]
     fn test_array_compact_sub_obj() {
-        let mut od = OD.lock().unwrap();
+        let mut od = ObjectDirectory::new(2, &EDS_DATA.lock().unwrap());
 
-        if let ObjectType::Array(array_obj) = od.get_object(0x1003).expect("Array not found") {
+        if let ObjectType::Array(array_obj) = od.get_mut_object(0x1003).expect("Array not found") {
             assert_eq!(array_obj.index, 0x1003);
             assert_eq!(array_obj.name, "Pre-defined error field");
         } else {
             panic!("Expect array at index 0x1003");
         }
 
-        if let Some(var) = od.get_variable(0x1003, 5) {
-            assert_eq!(var.name, "Pre-defined error field_5");
-            assert_eq!(var.index, 0x1003);
-            assert_eq!(var.sub_index, 5);
-            assert_eq!(var.data_type, DataType::Unsigned32);
-            assert_eq!(var.access_type, "ro");
-        } else {
-            panic!("Expected an Array at index 0x1003");
+        match od.get_variable(0x1003, 5) {
+            Ok(var) => {
+                assert_eq!(var.name, "Pre-defined error field_5");
+                assert_eq!(var.index, 0x1003);
+                assert_eq!(var.sub_index, 5);
+                assert_eq!(var.data_type, DataType::Unsigned32);
+                assert_eq!(var.access_type, AccessType::new(true, false));
+            }
+            Err(err) => panic!("Expected an Array at index 0x1003, err: {:?}", err),
         }
     }
 
     #[test]
     fn test_explicit_name_subobj() {
-        let mut od = OD.lock().unwrap();
-        let array = od.get_object(0x3004).expect("Array not found");
+        let mut od = ObjectDirectory::new(2, &EDS_DATA.lock().unwrap());
+        let array = od.get_mut_object(0x3004).expect("Array not found");
 
         if let ObjectType::Array(array_obj) = &array {
             assert_eq!(array_obj.name, "Sensor Status");
@@ -144,23 +146,24 @@ mod tests {
             panic!("Expected an Array at index 0x3004");
         }
 
-        if let Some(var) = od.get_variable(0x3004, 1) {
-            assert_eq!(var.name, "Sensor Status 1");
-        } else {
-            panic!("Expected an Variable at (0x3004, 1)");
+        match od.get_variable(0x3004, 1) {
+            Ok(var) => assert_eq!(var.name, "Sensor Status 1"),
+            Err(err) => panic!("Expected an Variable at (0x3004, 1), err: {:?}", err),
         }
 
-        if let Some(var) = od.get_variable(0x3004, 3) {
-            assert_eq!(var.name, "Sensor Status 3");
-            assert_eq!(var.default_value.to::<u16>(), 3);
-        } else {
+        match od.get_variable(0x3004, 3) {
+            Ok(var) => {
+                assert_eq!(var.name, "Sensor Status 3");
+                assert_eq!(var.default_value.to::<u16>(), 3);
+            }
+            Err(err) => panic!("Expected an Variable at (0x3004, 3), err: {:?}", err),
         }
     }
 
     #[test]
     fn test_parameter_name_with_percent() {
-        let od = OD.lock().unwrap();
-        let array = od.get_object(0x3003).expect("Array not found");
+        let mut od = ObjectDirectory::new(2, &EDS_DATA.lock().unwrap());
+        let array = od.get_mut_object(0x3003).expect("Array not found");
 
         if let ObjectType::Array(array_obj) = &array {
             assert_eq!(array_obj.name, "Valve % open");
@@ -171,8 +174,8 @@ mod tests {
 
     #[test]
     fn test_compact_subobj_parameter_name_with_percent() {
-        let od = OD.lock().unwrap();
-        let array = od.get_object(0x3006).expect("Array not found");
+        let mut od = ObjectDirectory::new(2, &EDS_DATA.lock().unwrap());
+        let array = od.get_mut_object(0x3006).expect("Array not found");
 
         if let ObjectType::Array(array_obj) = &array {
             assert_eq!(array_obj.name, "Valve 1 % Open");
@@ -183,14 +186,16 @@ mod tests {
 
     #[test]
     fn test_sub_index_with_capital_s() {
-        let od = OD.lock().unwrap();
-        let record = od.get_object(0x3010).expect("Record not found");
+        let mut od = ObjectDirectory::new(2, &EDS_DATA.lock().unwrap());
 
-        if let ObjectType::Record(record_obj) = &record {
-            let sub_obj = record_obj.get_variable(0).expect("Sub-object not found");
-            assert_eq!(sub_obj.name, "Temperature");
-        } else {
-            panic!("Expected a Record at index 0x3010");
+        match od.get_mut_object(0x3010).expect("Record not found") {
+            ObjectType::Record(record_obj) => {
+                let sub_obj = record_obj
+                    .get_mut_variable(0)
+                    .expect("Sub-object not found");
+                assert_eq!(sub_obj.name, "Temperature");
+            }
+            _ => panic!("Expected a Record at index 0x3010"),
         }
     }
 }

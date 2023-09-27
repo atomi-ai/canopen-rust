@@ -1,8 +1,41 @@
 use crate::data_type::DataType;
+use crate::error::CanAbortCode;
 use crate::prelude::*;
-use crate::util;
 use crate::value::{get_value, ByteConvertible, Value};
+use crate::{util, xprintln};
 use ini_core as ini;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccessType {
+    read_access: bool,
+    write_access: bool,
+}
+
+impl AccessType {
+    pub fn new(read: bool, write: bool) -> Self {
+        AccessType {
+            read_access: read,
+            write_access: write,
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "rw" => Some(AccessType::new(true, true)),
+            "ro" => Some(AccessType::new(true, false)),
+            "wo" => Some(AccessType::new(false, true)),
+            _ => Some(AccessType::new(false, false)),
+        }
+    }
+
+    pub fn can_read(&self) -> bool {
+        self.read_access
+    }
+
+    pub fn can_write(&self) -> bool {
+        self.write_access
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Variable {
@@ -13,17 +46,17 @@ pub struct Variable {
     pub min: Option<Value>,
     pub max: Option<Value>,
     pub pdo_mappable: bool,
-    pub access_type: String,
+    pub access_type: AccessType,
     pub parameter_value: Option<Value>,
     pub index: u16,
     pub sub_index: u8,
 }
 
 impl Variable {
-    pub fn to_packet(&self, cmd: u8) -> Vec<u8> {
+    pub fn to_packet(&self, base_cmd: u8) -> Vec<u8> {
         let mut packet = Vec::new();
         let v = &self.default_value;
-        let real_cmd = cmd | ((4 - v.len() as u8) << 2);
+        let real_cmd = base_cmd | ((4 - v.len() as u8) << 2);
         packet.push(real_cmd);
         packet.push((self.index & 0xFF) as u8);
         packet.push((self.index >> 8) as u8);
@@ -48,9 +81,13 @@ impl Array {
         self.name_to_index.insert(var.name.clone(), var.sub_index);
         self.index_to_variable.insert(var.sub_index, var);
     }
-    pub fn get_variable(&mut self, sub_index: u8) -> Option<&Variable> {
+
+    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, CanAbortCode> {
         if self.index_to_variable.contains_key(&sub_index) {
-            return self.index_to_variable.get(&sub_index);
+            return self
+                .index_to_variable
+                .get_mut(&sub_index)
+                .ok_or(CanAbortCode::ObjectDoesNotExistInObjectDictionary);
         }
 
         if 0 < sub_index && sub_index < 0xFF {
@@ -61,15 +98,17 @@ impl Array {
                 new_var.name = format!("{}_{}", self.name, sub_index);
                 new_var.sub_index = sub_index;
                 self.add_member(new_var);
-                return self.index_to_variable.get(&sub_index);
+                return self
+                    .index_to_variable
+                    .get_mut(&sub_index)
+                    .ok_or(CanAbortCode::ObjectDoesNotExistInObjectDictionary);
             }
         }
-
-        None
+        Err(CanAbortCode::ObjectDoesNotExistInObjectDictionary)
     }
-    pub fn get_variable_by_name(&mut self, name: &str) -> Option<&Variable> {
-        self.get_variable(*self.name_to_index.get(name).unwrap())
-    }
+    // pub fn get_variable_by_name(&mut self, name: &str) -> Result<&Variable, CanAbortCode> {
+    //     self.get_variable(*self.name_to_index.get(name).unwrap())
+    // }
 }
 
 #[derive(Debug)]
@@ -86,12 +125,20 @@ impl Record {
         self.name_to_index.insert(var.name.clone(), var.sub_index);
         self.index_to_variable.insert(var.sub_index, var);
     }
-    pub fn get_variable(&self, sub_index: u8) -> Option<&Variable> {
-        self.index_to_variable.get(&sub_index)
+
+    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, CanAbortCode> {
+        self.index_to_variable
+            .get_mut(&sub_index)
+            .ok_or(CanAbortCode::ObjectDoesNotExistInObjectDictionary)
     }
 
-    pub fn get_variable_by_name(&self, name: &str) -> Option<&Variable> {
-        self.get_variable(*self.name_to_index.get(name).unwrap())
+    pub fn get_variable_by_name(&self, name: &str) -> Result<&Variable, CanAbortCode> {
+        if let Some(idx) = self.name_to_index.get(name) {
+            let t = self.index_to_variable.get(idx);
+            t.ok_or(CanAbortCode::GeneralError)
+        } else {
+            Err(CanAbortCode::GeneralError)
+        }
     }
 }
 
@@ -129,6 +176,8 @@ pub struct ObjectDirectory {
     name_to_index: HashMap<String, u16>,
 }
 
+impl ObjectDirectory {}
+
 impl ObjectDirectory {
     pub fn new(node_id: u16, eds_content: &str) -> Self {
         let mut od = ObjectDirectory {
@@ -161,11 +210,72 @@ impl ObjectDirectory {
         }
     }
 
-    pub fn get_variable(&mut self, index: u16, sub_index: u8) -> Option<&Variable> {
-        match self.index_to_object.get_mut(&index)? {
-            ObjectType::Variable(var) => Some(var),
-            ObjectType::Array(arr) => arr.get_variable(sub_index),
-            ObjectType::Record(rec) => rec.get_variable(sub_index),
+    pub fn set_value(
+        &mut self,
+        index: u16,
+        sub_index: u8,
+        data: &[u8],
+    ) -> Result<(), CanAbortCode> {
+        match self.get_mut_variable(index, sub_index) {
+            Err(code) => Err(code),
+            Ok(var) => {
+                if !var.access_type.can_write() {
+                    return Err(CanAbortCode::AttemptToWriteReadOnlyObject);
+                }
+
+                if var.data_type.size() != data.len() {
+                    if var.data_type.size() > data.len() {
+                        return Err(CanAbortCode::DataTypeMismatchLengthTooLow);
+                    } else {
+                        return Err(CanAbortCode::DataTypeMismatchLengthTooHigh);
+                    }
+                }
+
+                // check data type
+                xprintln!(
+                    "xfguo: before set value, index: {} current value: {:?}",
+                    index,
+                    var
+                );
+                var.default_value.data = data.to_vec();
+                xprintln!(
+                    "xfguo: after set: get current value: {:?}",
+                    self.index_to_object.get(&index)
+                );
+                Ok(())
+            }
+        }
+    }
+
+    pub fn get_variable(&mut self, index: u16, sub_index: u8) -> Result<&Variable, CanAbortCode> {
+        match self.get_mut_variable(index, sub_index) {
+            Ok(var) => {
+                if !var.access_type.can_read() {
+                    return Err(CanAbortCode::AttemptToReadWriteOnlyObject);
+                }
+                xprintln!("xfguo: get var: {:?}", var);
+                Ok(var)
+            }
+            Err(code) => Err(code),
+        }
+    }
+
+    pub fn get_mut_variable(
+        &mut self,
+        index: u16,
+        sub_index: u8,
+    ) -> Result<&mut Variable, CanAbortCode> {
+        match self.index_to_object.get_mut(&index) {
+            Some(ObjectType::Variable(var)) => {
+                if sub_index == 0 {
+                    Ok(var)
+                } else {
+                    Err(CanAbortCode::SubIndexDoesNotExist)
+                }
+            }
+            Some(ObjectType::Array(arr)) => arr.get_mut_variable(sub_index),
+            Some(ObjectType::Record(rec)) => rec.get_mut_variable(sub_index),
+            None => Err(CanAbortCode::ObjectDoesNotExistInObjectDictionary),
         }
     }
 
@@ -176,8 +286,8 @@ impl ObjectDirectory {
         None
     }
 
-    pub fn get_object(&self, index: u16) -> Option<&ObjectType> {
-        self.index_to_object.get(&index)
+    pub fn get_mut_object(&mut self, index: u16) -> Option<&mut ObjectType> {
+        self.index_to_object.get_mut(&index)
     }
 
     pub fn process_section(
@@ -221,7 +331,7 @@ impl ObjectDirectory {
                             min: None,
                             max: None,
                             pdo_mappable: false,
-                            access_type: "".to_string(),
+                            access_type: AccessType::new(false, false),
                             storage_location: "".to_string(),
                             parameter_value: None,
                         };
@@ -323,10 +433,12 @@ fn build_variable(
         .get("StorageLocation")
         .unwrap_or(&String::from(""))
         .clone();
-    let access_type = properties
-        .get("AccessType")
-        .unwrap_or(&String::from("rw"))
-        .to_lowercase();
+    let access_type = AccessType::from_str(
+        &*properties
+            .get("AccessType")
+            .unwrap_or(&String::from("rw"))
+            .to_lowercase(),
+    );
     let pdo_mapping = properties
         .get("PDOMapping")
         .unwrap_or(&String::from("0"))
@@ -345,15 +457,18 @@ fn build_variable(
     let max = get_value(&properties, "HighLimit", node_id, &dt);
 
     let default_value = get_value(&properties, "DefaultValue", node_id, &dt).unwrap_or(Value {
-        data: 0u32.to_bytes(),
+        data: dt.default_value(),
     });
+    if index == 0x1200 && sub_index == Some(1) {
+        xprintln!("xfguo: debug");
+    }
     let parameter_value = get_value(&properties, "ParameterValue", node_id, &dt);
 
     let variable = Variable {
         name: name.clone(),
         storage_location: storage_location,
         data_type: dt,
-        access_type: access_type,
+        access_type: access_type.unwrap(),
         pdo_mappable: pdo_mapping,
         min: min,
         max: max,

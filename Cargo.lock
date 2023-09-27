@@ -224,6 +224,7 @@ dependencies = [
  "hashbrown",
  "ini_core",
  "lazy_static",
+ "nix",
  "socketcan",
  "tokio",
 ]
