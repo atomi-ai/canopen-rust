@@ -60,12 +60,12 @@ impl_byte_convertible_for_int!(f32, 4);
 impl_byte_convertible_for_int!(f64, 8);
 
 impl ByteConvertible for String {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.as_bytes().to_vec()
-    }
-
     fn from_bytes(bytes: &[u8]) -> Self {
         String::from_utf8(bytes.to_vec()).expect("Failed to convert bytes to String")
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
     }
 }
 

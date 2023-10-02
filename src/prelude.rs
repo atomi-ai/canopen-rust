@@ -5,11 +5,11 @@ mod std_items {
     pub use std::fmt::Debug;
     pub use std::fmt::Error;
     pub use std::*;
-
-    pub fn sleep(ms: u64) {
-        use std::time::Duration;
-        std::thread::sleep(Duration::from_millis(ms));
-    }
+    //
+    // pub fn sleep(ms: u64) {
+    //     use std::time::Duration;
+    //     std::thread::sleep(Duration::from_millis(ms));
+    // }
 }
 
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
@@ -28,7 +28,7 @@ mod no_std_items {
     pub use core::*;
     pub use hashbrown::HashMap;
 
-    pub fn sleep(_ms: u64) {}
+    // pub fn sleep(_ms: u64) {}
 }
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]

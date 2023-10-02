@@ -86,6 +86,7 @@ DataType=0x0005
 AccessType=ro
 DefaultValue=0x04
 PDOMapping=0
+DefaultValue=
 
 [1018sub1]
 ParameterName=Vendor-ID
@@ -354,7 +355,7 @@ ObjectType=0x7
 ;StorageLocation=PERSIST_COMM
 DataType=0x0009
 AccessType=ro
-DefaultValue=
+DefaultValue=CANopenDemoPIC32
 PDOMapping=0
 
 [1009]

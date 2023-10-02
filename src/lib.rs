@@ -1,4 +1,4 @@
-// TODO(zephyr): enable "#![no_std]" later, and start to build for multiple targets.
+// To build for different platform:
 //   cargo build --target thumbv6m-none-eabi
 //   cargo build --target x86_64-unknown-linux-gnu
 
@@ -12,4 +12,6 @@ pub mod sdo_client;
 pub mod util;
 pub mod value;
 
+mod cmd_header;
 mod prelude;
+mod sdo_server;

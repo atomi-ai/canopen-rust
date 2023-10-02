@@ -459,9 +459,9 @@ fn build_variable(
     let default_value = get_value(&properties, "DefaultValue", node_id, &dt).unwrap_or(Value {
         data: dt.default_value(),
     });
-    if index == 0x1200 && sub_index == Some(1) {
-        xprintln!("xfguo: debug");
-    }
+    // if index == 0x1200 && sub_index == Some(1) {
+    //     xprintln!("xfguo: debug");
+    // }
     let parameter_value = get_value(&properties, "ParameterValue", node_id, &dt);
 
     let variable = Variable {

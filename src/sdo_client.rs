@@ -1,10 +1,11 @@
+// It doesn't seem to be very necessary, it's not done yet.
+// Please don't use.
 use crate::prelude::*;
 use crate::value::Value;
 use crate::{util, xprintln};
 use embedded_can::{blocking::Can, Error, Frame, StandardId};
 
 pub struct SDOClient<F: Frame + Debug, E: Error> {
-    // TODO(zephyr): replace with embedded_can::blocking::Can, CanSocket implements it by default.
     network: Box<dyn Can<Frame = F, Error = E>>,
 }
 
