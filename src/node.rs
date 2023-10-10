@@ -75,28 +75,32 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
             .expect("Failed to send CAN frame");
     }
 
+    pub fn process_one_frame(&mut self) {
+        xprintln!("[node] wait for a frame");
+        let frame = self
+            .can_network
+            .receive()
+            .expect("Failed to read CAN frame");
+        xprintln!("[node] got frame: {:?}", frame);
+
+        if let Some(response) = self.communication_object_dispatch(frame) {
+            if let Id::Standard(sid) = response.id() {
+                if sid.as_raw() == 0 {
+                    // Don't need to send any reply for empty frame.
+                    return;
+                }
+            }
+            xprintln!("[node] to send reply : {:?}", response);
+            self.can_network
+                .transmit(&response)
+                .expect("Failed to send CAN frame");
+            xprintln!("[node] sent a frame : {:?}", response);
+        }
+    }
+
     pub fn run(&mut self) {
         loop {
-            xprintln!("[node] wait for a frame");
-            let frame = self
-                .can_network
-                .receive()
-                .expect("Failed to read CAN frame");
-            xprintln!("[node] got frame: {:?}", frame);
-
-            if let Some(response) = self.communication_object_dispatch(frame) {
-                if let Id::Standard(sid) = response.id() {
-                    if sid.as_raw() == 0 {
-                        // Don't need to send any reply for empty frame.
-                        continue;
-                    }
-                }
-                xprintln!("[node] to send reply : {:?}", response);
-                self.can_network
-                    .transmit(&response)
-                    .expect("Failed to send CAN frame");
-                xprintln!("[node] sent a frame : {:?}", response);
-            }
+            self.process_one_frame();
         }
     }
 }
