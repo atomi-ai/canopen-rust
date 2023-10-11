@@ -13,13 +13,4 @@ ini_core = "0.2"
 bitfield-struct = "0.5"
 bit-struct = "0.3"
 
-[dev-dependencies]
-anyhow = "1.0"
-async-std = "1.12"
-byteorder = "1.4"
-lazy_static = "1.4"
-socketcan = { git = "https://github.com/socketcan-rs/socketcan-rs", branch = "master", features = ["async-std"]}
-tokio = { version = "1", features = ["full"] }
-nix = { version = "0.26", features = ["poll"]}
-
 [features]
