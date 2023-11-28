@@ -2,7 +2,7 @@ use crate::data_type::DataType;
 use crate::error::CanAbortCode;
 use crate::prelude::*;
 use crate::value::{get_value, ByteConvertible, Value};
-use crate::{util, xprintln};
+use crate::util;
 use ini_core as ini;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -215,7 +215,7 @@ impl ObjectDirectory {
         index: u16,
         sub_index: u8,
         data: &[u8],
-    ) -> Result<(), CanAbortCode> {
+    ) -> Result<&Variable, CanAbortCode> {
         match self.get_mut_variable(index, sub_index) {
             Err(code) => Err(code),
             Ok(var) => {
@@ -231,18 +231,18 @@ impl ObjectDirectory {
                     }
                 }
 
-                // check data type
-                xprintln!(
-                    "xfguo: before set value, index: {} current value: {:?}",
-                    index,
-                    var
-                );
+                // // check data type
+                // info!(
+                //     "xfguo: before set value, index: {} current value: {:?}",
+                //     index,
+                //     var
+                // );
                 var.default_value.data = data.to_vec();
-                xprintln!(
-                    "xfguo: after set: get current value: {:?}",
-                    self.index_to_object.get(&index)
-                );
-                Ok(())
+                // info!(
+                //     "xfguo: after set: get current value: {:?}",
+                //     self.index_to_object.get(&index)
+                // );
+                Ok(var)
             }
         }
     }
@@ -253,7 +253,7 @@ impl ObjectDirectory {
                 if !var.access_type.can_read() {
                     return Err(CanAbortCode::AttemptToReadWriteOnlyObject);
                 }
-                xprintln!("xfguo: get var: {:?}", var);
+                // info!("xfguo: get var: {:?}", var);
                 Ok(var)
             }
             Err(code) => Err(code),

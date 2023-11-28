@@ -2,7 +2,7 @@
 // Please don't use.
 use crate::prelude::*;
 use crate::value::Value;
-use crate::{util, xprintln};
+use crate::{util, info};
 use embedded_can::{blocking::Can, Error, Frame, StandardId};
 
 pub struct SDOClient<F: Frame + Debug, E: Error> {
@@ -23,16 +23,16 @@ impl<F: Frame + Debug, E: Error> SDOClient<F, E> {
             "[sdo client] Failed to send CAN frame: {:?}",
             request
         ));
-        xprintln!("[sdo client] sent a frame: {:?}", request);
+        info!("[sdo client] sent a frame: {:?}", request);
 
         loop {
-            xprintln!("[sdo client] start to read a frame");
+            info!("[sdo client] start to read a frame");
             let frame = self
                 .network
                 .receive()
                 .expect("[sdo client] Failed to read CAN frame");
-            xprintln!("[client] got frame: {:?}", frame);
-            let sid = util::get_standard_can_id_from_frame(&frame).unwrap();
+            info!("[client] got frame: {:?}", frame);
+            let sid = util::get_cob_id(&frame).unwrap();
             let (idx, sub_idx) = util::get_index_from_can_frame(&frame);
             if sid == node_id | 0x580 && index == idx && sub_index == sub_idx {
                 return self.parse_response(&frame);

@@ -40,7 +40,7 @@ macro_rules! impl_byte_convertible_for_int {
             }
 
             fn from_bytes(bytes: &[u8]) -> Self {
-                assert!(bytes.len() == $len);
+                assert_eq!(bytes.len(), $len);
                 let array: [u8; $len] = bytes.try_into().expect("Wrong number of bytes");
                 <$t>::from_le_bytes(array)
             }

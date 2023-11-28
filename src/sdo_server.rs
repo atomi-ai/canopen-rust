@@ -1,4 +1,5 @@
-use embedded_can::{Error, Frame, StandardId};
+use embedded_can::{Frame, StandardId};
+use embedded_can::nb::Can;
 
 use crate::cmd_header::{
     SdoBlockDownloadInitiateCmd, SdoBlockUploadCmd, SdoDownloadInitiateCmd, SdoDownloadSegmentCmd,
@@ -11,7 +12,7 @@ use crate::sdo_server::SdoState::{
     ConfirmUploadSdoBlock, DownloadSdoBlock, EndSdoBlockDownload, Normal, SdoSegmentDownload,
     SdoSegmentUpload, StartSdoBlockUpload,
 };
-use crate::util::{crc16_canopen_with_lut, flatten, genf};
+use crate::util::{crc16_canopen_with_lut, flatten, genf_and_padding};
 
 /// Represents the various states of the SDO (Service Data Object) communication process.
 /// These states govern the different phases or modes of SDO transmissions in a CANopen system.
@@ -38,8 +39,8 @@ pub enum SdoState {
     ConfirmUploadSdoBlock,
 }
 
-impl<F: Frame + Debug, E: Error> Node<F, E> {
-    fn create_error_frame(&self, error_code: CanAbortCode, index: u16, sub_index: u8) -> F {
+impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
+    fn create_error_frame(&self, error_code: CanAbortCode, index: u16, sub_index: u8) -> CAN::Frame {
         let mut packet = Vec::new();
         packet.push(0x80);
         packet.push((index & 0xFF) as u8);
@@ -54,8 +55,8 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         .unwrap()
     }
 
-    fn genf(&self, data: &[u8]) -> Result<F, CanAbortCode> {
-        Ok(genf(0x580 | self.node_id, data))
+    fn genf(&self, data: &[u8]) -> Result<CAN::Frame, CanAbortCode> {
+        Ok(genf_and_padding(0x580 | self.node_id, data))
     }
 
     pub(crate) fn gen_frame(
@@ -64,7 +65,7 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         index: u16,
         sub_index: u8,
         data: &Vec<u8>,
-    ) -> Result<F, CanAbortCode> {
+    ) -> Result<CAN::Frame, CanAbortCode> {
         let bytes = flatten(&[&[cmd], &index.to_le_bytes(), &sub_index.to_le_bytes(), data]);
         self.genf(bytes.as_slice())
     }
@@ -72,13 +73,16 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
     pub(crate) fn next_state(
         &mut self,
         state: SdoState,
-        res: Result<F, CanAbortCode>,
-    ) -> Result<F, CanAbortCode> {
+        res: Result<CAN::Frame, CanAbortCode>,
+    ) -> Result<CAN::Frame, CanAbortCode> {
         self.sdo_state = state;
         res
     }
 
-    pub(crate) fn dispatch_sdo_request(&mut self, frame: &F) -> F {
+    pub(crate) fn dispatch_sdo_request(&mut self, frame: &CAN::Frame) -> Option<CAN::Frame> {
+        if self.filter_frame(frame) {
+            return None;
+        }
         let cmd = frame.data()[0];
         let ccs = cmd >> 5;
 
@@ -110,7 +114,7 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         };
 
         match res {
-            Ok(frame) => frame,
+            Ok(frame) => Some(frame),
             Err(code) => {
                 let (idx, sidx) = match self.sdo_state {
                     Normal => (index, sub_index),
@@ -120,12 +124,12 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
                 self.read_buf = None;
                 self.write_buf = None;
                 self.need_crc = false;
-                self.create_error_frame(code, idx, sidx)
+                Some(self.create_error_frame(code, idx, sidx))
             }
         }
     }
 
-    fn initiate_upload(&mut self, index: u16, sub_index: u8) -> Result<F, CanAbortCode> {
+    fn initiate_upload(&mut self, index: u16, sub_index: u8) -> Result<CAN::Frame, CanAbortCode> {
         let data = match self.object_directory.get_variable(index, sub_index) {
             Ok(var) => &var.default_value.data,
             Err(code) => return Err(code),
@@ -151,7 +155,7 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         self.next_state(SdoSegmentUpload, res)
     }
 
-    fn upload_segment(&mut self, cmd: u8) -> Result<F, CanAbortCode> {
+    fn upload_segment(&mut self, cmd: u8) -> Result<CAN::Frame, CanAbortCode> {
         if cmd >> 5 != 0x3 {
             return Err(CanAbortCode::GeneralError);
         }
@@ -189,12 +193,12 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         index: u16,
         sub_index: u8,
         req: &[u8],
-    ) -> Result<F, CanAbortCode> {
+    ) -> Result<CAN::Frame, CanAbortCode> {
         let cmd = SdoDownloadInitiateCmd::from(req[0]);
         if cmd.e() && cmd.s() {
             // Expedite download.
             let data = &req[4..(8 - cmd.n() as usize)];
-            return match self.object_directory.set_value(index, sub_index, data) {
+            return match self.set_value_and_check(index, sub_index, data) {
                 Err(code) => Err(code),
                 Ok(_) => self.gen_frame(0x60, index, sub_index, &vec![0, 0, 0, 0]),
             };
@@ -217,11 +221,12 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         self.next_state(SdoSegmentDownload, res)
     }
 
-    fn download_segment(&mut self, req: &[u8]) -> Result<F, CanAbortCode> {
+    fn download_segment(&mut self, req: &[u8]) -> Result<CAN::Frame, CanAbortCode> {
         let req_cmd = SdoDownloadSegmentCmd::from(req[0]);
         if req_cmd.ccs() != 0x0 {
             return Err(CanAbortCode::GeneralError);
         }
+
         if let Some(buf) = &mut self.write_buf {
             let resp_cmd = 0x20 | (req_cmd.t() << 4);
             if !req_cmd.c() {
@@ -237,7 +242,8 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
                 return Err(CanAbortCode::GeneralError);
             }
             let (i, si) = (self.reserved_index, self.reserved_sub_index);
-            match self.object_directory.set_value(i, si, &*buf) {
+            let t = buf.clone();
+            match self.set_value_and_check(i, si, t.as_slice()) {
                 Ok(_) => self.genf(&[resp_cmd]),
                 Err(code) => Err(code),
             }
@@ -251,7 +257,7 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         index: u16,
         sub_index: u8,
         req: &[u8],
-    ) -> Result<F, CanAbortCode> {
+    ) -> Result<CAN::Frame, CanAbortCode> {
         let cmd = SdoBlockDownloadInitiateCmd::from(req[0]);
         if cmd.cc() {
             self.need_crc = true;
@@ -277,7 +283,20 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         self.next_state(DownloadSdoBlock, res)
     }
 
-    fn block_download(&mut self, req: &[u8]) -> Result<F, CanAbortCode> {
+    fn set_value_and_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), CanAbortCode> {
+        match self.object_directory.set_value(index, sub_index, data) {
+            Ok(var) => {
+                if index >= 0x1400 && index < 0x1C00 {
+                    // Update PDO related parameters
+                    self.pdo_objects.update(var);
+                }
+                Ok(())
+            }
+            Err(code) => {Err(code)}
+        }
+    }
+
+    fn block_download(&mut self, req: &[u8]) -> Result<CAN::Frame, CanAbortCode> {
         let seqno = req[0] & 0x7F;
         self.current_seq_number += 1;
         if seqno != self.current_seq_number {
@@ -297,7 +316,9 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
                 // TODO(zephyr): check correctness: CRC
                 // Write data to object directory.
                 let (i, si) = (self.reserved_index, self.reserved_sub_index);
-                match self.object_directory.set_value(i, si, &*buf) {
+                // TODO(zephyr): Don't clone in set value in the future.
+                let t = buf.clone();
+                match self.set_value_and_check(i, si, t.as_slice()) {
                     Ok(_) => {}
                     Err(code) => return Err(code),
                 }
@@ -312,7 +333,7 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         }
     }
 
-    fn end_block_download(&self, req: &[u8]) -> Result<F, CanAbortCode> {
+    fn end_block_download(&self, req: &[u8]) -> Result<CAN::Frame, CanAbortCode> {
         let cmd = SdoEndBlockDownloadCmd::from(req[0]);
         if cmd.n() as u32 != 7 - self.write_data_size % 7 {
             return Err(CanAbortCode::GeneralError);
@@ -328,7 +349,7 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         index: u16,
         sub_index: u8,
         req: &[u8],
-    ) -> Result<F, CanAbortCode> {
+    ) -> Result<CAN::Frame, CanAbortCode> {
         let cmd = SdoInitBlockUploadCmd::from(req[0]);
         let (blk_size, _pst) = (req[4], req[5]);
 
@@ -359,7 +380,7 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         self.next_state(StartSdoBlockUpload, res)
     }
 
-    fn start_block_upload(&mut self, req: &[u8]) -> Result<F, CanAbortCode> {
+    fn start_block_upload(&mut self, req: &[u8]) -> Result<CAN::Frame, CanAbortCode> {
         let cmd = SdoBlockUploadCmd::from(req[0]);
         if cmd.ccs() != 0x5 || cmd.cs() != 0x3 {
             return Err(CanAbortCode::GeneralError);
@@ -375,7 +396,7 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
             // This is a special case, directly transmit (total_seq - 1) frames,
             // only leave the last one at last for change the state.
             let (s, e) = ((i * 7) as usize, (i * 7 + 7) as usize);
-            let frame = genf(
+            let frame = genf_and_padding(
                 0x580 | self.node_id,
                 flatten(&[&[i + 1], &buf[s..e]]).as_slice(),
             );
@@ -388,7 +409,7 @@ impl<F: Frame + Debug, E: Error> Node<F, E> {
         self.next_state(ConfirmUploadSdoBlock, f)
     }
 
-    fn confirm_block_upload(&mut self, req: &[u8]) -> Result<F, CanAbortCode> {
+    fn confirm_block_upload(&mut self, req: &[u8]) -> Result<CAN::Frame, CanAbortCode> {
         let cmd = SdoBlockUploadCmd::from(req[0]);
         if cmd.ccs() != 0x5 || cmd.cs() != 2 {
             return Err(CanAbortCode::GeneralError);

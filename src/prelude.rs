@@ -27,7 +27,6 @@ mod no_std_items {
     pub use core::fmt::Error;
     pub use core::*;
     pub use hashbrown::HashMap;
-
     // pub fn sleep(_ms: u64) {}
 }
 
@@ -35,15 +34,17 @@ mod no_std_items {
 pub use no_std_items::*;
 
 #[macro_export]
-macro_rules! xprintln {
+macro_rules! info {
     ($($arg:tt)*) => {
         #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
         {
-            println!($($arg)*);
+            log::info!($($arg)*);
+            // println!($($arg)*);
         }
         #[cfg(all(target_arch = "arm", target_os = "none"))]
         {
-            // TODO(zephyr): Add logging solution for RP2040.
+            let value_str = alloc::format!($($arg)*);
+            defmt::info!("{}", defmt::Debug2Format(&value_str));
         }
     };
 }

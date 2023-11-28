@@ -2,6 +2,7 @@ use crate::prelude::*;
 
 use core::str::FromStr;
 use embedded_can::{Frame, Id, StandardId};
+use embedded_can::Id::Standard;
 
 pub trait ParseRadix: FromStr {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, Self::Err>
@@ -80,7 +81,7 @@ pub fn to_value_with_node_id(node_id: u16, expression: &str) -> String {
     value_sum.to_string()
 }
 
-pub fn get_standard_can_id_from_frame<F: Frame>(frame: &F) -> Option<u16> {
+pub fn get_cob_id<F: Frame>(frame: &F) -> Option<u16> {
     if let Id::Standard(sid) = frame.id() {
         return Some(sid.as_raw());
     }
@@ -137,7 +138,16 @@ pub fn flatten(slices: &[&[u8]]) -> Vec<u8> {
     res
 }
 
-pub fn genf<F: Frame + Debug>(can_id: u16, bytes: &[u8]) -> F {
+pub fn u64_to_vec(mut data: u64, bytes: usize) -> Vec<u8> {
+    let mut res = vec![0u8; bytes];
+    for i in 0..bytes {
+        res[bytes - 1 - i] = (data & 0xFF) as u8;
+        data = data >> 8;
+    }
+    res
+}
+
+pub fn genf_and_padding<F: Frame + Debug>(cob_id: u16, bytes: &[u8]) -> F {
     // Ensure bytes doesn't exceed 8 in length
     let cutoff = if bytes.len() > 8 { 8 } else { bytes.len() };
     let mut packet = bytes[0..cutoff].to_vec();
@@ -147,7 +157,11 @@ pub fn genf<F: Frame + Debug>(can_id: u16, bytes: &[u8]) -> F {
         packet.push(0);
     }
 
-    F::new(StandardId::new(can_id).unwrap(), packet.as_slice()).unwrap()
+    F::new(StandardId::new(cob_id).unwrap(), packet.as_slice()).unwrap()
+}
+
+pub fn genf<F: Frame + Debug>(cob_id: u16, bytes: &[u8]) -> F {
+    F::new(StandardId::new(cob_id).unwrap(), bytes).unwrap()
 }
 
 static CCITT_HASH: [u16; 256] = [

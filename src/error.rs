@@ -32,6 +32,9 @@ impl CanAbortCode {
             CanAbortCode::DataTransferOrStoreFailedDueToLocalControl => 0x0800_0021,
             CanAbortCode::DataTransferOrStoreFailedDueToDeviceState => 0x0800_0022,
             CanAbortCode::ObjectDictionaryGenerationFailedOrNotPresent => 0x0800_0023,
+
+            // Only used in the project
+            CanAbortCode::Other => 0x0000_0000,
         }
     }
 
@@ -66,6 +69,8 @@ impl CanAbortCode {
             CanAbortCode::DataTransferOrStoreFailedDueToLocalControl => "Data cannot be transferred or stored to the application because of local control",
             CanAbortCode::DataTransferOrStoreFailedDueToDeviceState => "Data cannot be transferred or stored to the application because of the present device state",
             CanAbortCode::ObjectDictionaryGenerationFailedOrNotPresent => "Object dictionary dynamic generation fails or no object dictionary is present (e.g. object dictionary is generated from file and generation fails because of a file error)",
+
+            CanAbortCode::Other => "Other",
         }
     }
 
@@ -105,7 +110,7 @@ impl CanAbortCode {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum CanAbortCode {
     ToggleBitNotAlternated,
     SdoProtocolTimedOut,
@@ -136,4 +141,6 @@ pub enum CanAbortCode {
     DataTransferOrStoreFailedDueToLocalControl,
     DataTransferOrStoreFailedDueToDeviceState,
     ObjectDictionaryGenerationFailedOrNotPresent,
+
+    Other,
 }
