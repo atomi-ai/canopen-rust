@@ -1,11 +1,12 @@
 use embedded_can::{nb::Can, Frame, Id, StandardId};
+use crate::emergency::{EmergencyErrorCode, ErrorRegister};
 
 use crate::object_directory::ObjectDirectory;
 use crate::pdo::PdoObjects;
 use crate::prelude::*;
 use crate::sdo_server::SdoState;
 use crate::sdo_server::SdoState::Normal;
-use crate::util::get_cob_id;
+use crate::util::{genf, genf_and_padding, get_cob_id, u64_to_vec};
 use crate::info;
 
 const DEFAULT_BLOCK_SIZE: u8 = 0x7F;
@@ -16,6 +17,17 @@ pub enum NodeState {
     PreOperational,
     Operational,
     Stopped,
+}
+
+impl NodeState {
+    pub fn heartbeat_code(&self) -> u8 {
+        match *self {
+            NodeState::Init => 0,
+            NodeState::PreOperational => 127,
+            NodeState::Operational => 5,
+            NodeState::Stopped => 4,
+        }
+    }
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -29,7 +41,7 @@ pub struct Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
     pub(crate) node_id: u16,  // TODO(zephyr): should be u8 for "CANOPEN 2.0a"
     pub(crate) can_network: CAN,
     pub(crate) object_directory: ObjectDirectory,
-    pub(crate) pdo_objects: PdoObjects,
+    pub pdo_objects: PdoObjects,
 
     // SDO specific data below:
     pub(crate) sdo_state: SdoState,
@@ -50,6 +62,9 @@ pub struct Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
     pub(crate) sync_count: u32,
     pub(crate) event_count: u32,
     pub(crate) state: NodeState,
+    pub(crate) error_count: u8,
+    pub(crate) heartbeats: u32,
+    pub(crate) heartbeats_timer: u32,
 }
 
 impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
@@ -58,9 +73,9 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         eds_content: &str,
         can_network: CAN,
     ) -> Self {
-        let mut object_directory = ObjectDirectory::new(node_id, eds_content);
-        let pdo_objects = PdoObjects::new(&mut object_directory);
-        Node {
+        let object_directory = ObjectDirectory::new(node_id, eds_content);
+        let pdo_objects = PdoObjects::new();
+        let mut node = Node {
             node_id,
             can_network,
             object_directory,
@@ -80,6 +95,33 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             sync_count: 0,
             event_count: 0,
             state: NodeState::Init,
+            error_count: 0,
+            heartbeats: 0,
+            heartbeats_timer: 0,
+        };
+        node.update_pdo_params();
+        node
+    }
+
+    pub(crate) fn update_pdo_params(&mut self) {
+        for i in (0x1400..0x1C00).step_by(0x200) {
+            for j in 0..4 {
+                let idx = i + j;
+                let mut len = 0u8;
+                let mut k = 0u8;
+                while k <= len {
+                    match self.object_directory.get_variable(idx, k) {
+                        Ok(var) => {
+                            let var_clone = var.clone();
+                            // info!("update_pdo_params, 5, var = {:#x?}, var_clone = {:#x?}", var, var_clone);
+                            self.update(&var_clone);
+                            if k == 0 { len = var_clone.default_value.to(); }
+                        }
+                        _ => {}
+                    }
+                    k += 1;
+                }
+            }
         }
     }
 
@@ -106,12 +148,11 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     }
 
     fn process_nmt_frame(&mut self, frame: &CAN::Frame) -> Option<CAN::Frame> {
-        info!("xfguo: process_nmt_frame 0: {:?}", frame);
         if frame.dlc() != 2 {
             return None;
         }
         let (cs, nid) = (frame.data()[0], frame.data()[1]);
-        info!("xfguo: process_nmt_frame 1: cs = {:#x}, nid = {}", cs, nid);
+        info!("process_nmt_frame 1: cs = {:#x}, nid = {}", cs, nid);
         if nid != self.node_id as u8 {
             return None;
         }
@@ -144,35 +185,36 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         None
     }
 
-    fn process_sync_frame(&mut self) -> Option<CAN::Frame> {
-        if self.state == NodeState::Operational {
-            self.sync_count += 1;
-            self.transmit_pdo_messages(true, NodeEvent::Unused, self.sync_count);
+    fn process_rpdo_frame(&mut self, frame: &CAN::Frame) -> Option<CAN::Frame> {
+        if let Some(cob_id) = get_cob_id(frame) {
+            if let Some(&index) = self.pdo_objects.cob_to_index.get(&cob_id) {
+                let rpdo = &mut self.pdo_objects.rpdos[index];
+                if frame.data().len() != ((rpdo.total_length + 7) / 8) as usize {
+                    // trigger emergency
+                    let bytes = cob_id.to_le_bytes();
+                    self.trigger_emergency(EmergencyErrorCode::PdoNotProcessed, ErrorRegister::GenericError, &bytes);
+                    return None
+                }
+                rpdo.cached_data.clear();
+                rpdo.cached_data.extend_from_slice(frame.data());
+            }
         }
         None
     }
 
-    pub fn trigger_event(&mut self, event: NodeEvent) {
-        self.event_count = 0;
-        self.sync_count = 0;
-        self.transmit_pdo_messages(false, event, self.event_count);
-    }
-
-    pub fn event_timer_callback(&mut self) {
-        // info!("xfguo: event_timer_callback 0");
-        if self.state == NodeState::Operational {
-            self.event_count += 1;
-            self.transmit_pdo_messages(false, NodeEvent::RegularTimerEvent, self.event_count);
-        }
-    }
-
     pub fn communication_object_dispatch(&mut self, frame: CAN::Frame) -> Option<CAN::Frame> {
-        let cob_id = get_cob_id(&frame).unwrap();
-        match cob_id & 0xFF80 {
-            0x000 => self.process_nmt_frame(&frame),
-            0x080 => self.process_sync_frame(),
-            0x600 => self.dispatch_sdo_request(&frame),
-            _ => None,
+        if let Some(cob_id) = get_cob_id(&frame) {
+            match cob_id & 0xFF80 {
+                0x000 => self.process_nmt_frame(&frame),
+                0x200 | 0x300 | 0x400 | 0x500 => self.process_rpdo_frame(&frame),
+                0x080 => self.process_sync_frame(),
+                0x600 => self.dispatch_sdo_request(&frame),
+                _ => None,
+            }
+        } else {
+            // TODO(zephyr): Do we need to reply something here to notify that we don't support
+            // CAN2.0B currently?
+            None
         }
     }
 
@@ -182,19 +224,6 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             .transmit(&ready_frame)
             .expect("Failed to send CAN frame");
     }
-    //
-    // fn transmit(&mut self, frame: &CAN::Frame, max_retries: i32) {
-    //     for _ in 1..max_retries {
-    //         match self.can_network.transmit(frame) {
-    //             Ok(None) => return,
-    //             Ok(Option::Some(f)) => self.transmit(&f, max_retries),
-    //             Err(err) => {
-    //                 info!("xfguo: Errors({:?}) in transmit frame, retry", err);
-    //             }
-    //         }
-    //     }
-    //     info!("xfguo: Failed to transmit frame {:?} after {:?} retries", frame, max_retries);
-    // }
 
     // Need to be non-blocking.
     pub fn process_one_frame(&mut self) {
@@ -206,7 +235,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 return
             }
         };
-        info!("[node] got frame: {:?}", frame);
+        info!("got frame: {:?}", frame);
 
         if let Some(response) = self.communication_object_dispatch(frame) {
             if let Id::Standard(sid) = response.id() {
@@ -219,7 +248,46 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             self.can_network
                 .transmit(&response)
                 .expect("Failed to send CAN frame");
-            info!("[node] sent a frame : {:?}", response);
+            info!("sent a frame : {:?}", response);
+        }
+    }
+
+    pub fn trigger_event(&mut self, event: NodeEvent) {
+        match event {
+            NodeEvent::NodeStart => {
+                self.event_count = 0;
+                self.sync_count = 0;
+                self.error_count = 0;
+                self.heartbeats = 0;
+                self.transmit_pdo_messages(false, event, self.event_count);
+            }
+            _ => {}
+        }
+    }
+
+    fn process_sync_frame(&mut self) -> Option<CAN::Frame> {
+        if self.state == NodeState::Operational {
+            self.sync_count += 1;
+            self.save_rpdo_messages(true, NodeEvent::Unused, self.sync_count);
+            self.transmit_pdo_messages(true, NodeEvent::Unused, self.sync_count);
+        }
+        None
+    }
+
+    pub fn event_timer_callback(&mut self) {
+        // info!("event_timer_callback 0, state = {:?}", self.state);
+        if self.heartbeats_timer > 0 {
+            self.heartbeats += 1;
+            if self.heartbeats % self.heartbeats_timer == 0 {
+                let frame = genf(0x700 + self.node_id, &[self.state.heartbeat_code()]);
+                self.can_network.transmit(&frame).expect("Heartbeat error");
+            }
+        }
+
+        if self.state == NodeState::Operational {
+            self.event_count += 1;
+            self.save_rpdo_messages(false, NodeEvent::RegularTimerEvent, self.event_count);
+            self.transmit_pdo_messages(false, NodeEvent::RegularTimerEvent, self.event_count);
         }
     }
 }

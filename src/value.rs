@@ -2,6 +2,7 @@ use crate::data_type::DataType;
 use crate::prelude::*;
 use crate::util;
 
+// TODO(zephyr): Use pub(crate) to replace pub for package internal definitions
 #[derive(Clone, Debug)]
 pub struct Value {
     pub data: Vec<u8>,

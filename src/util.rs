@@ -2,7 +2,6 @@ use crate::prelude::*;
 
 use core::str::FromStr;
 use embedded_can::{Frame, Id, StandardId};
-use embedded_can::Id::Standard;
 
 pub trait ParseRadix: FromStr {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, Self::Err>
@@ -85,6 +84,7 @@ pub fn get_cob_id<F: Frame>(frame: &F) -> Option<u16> {
     if let Id::Standard(sid) = frame.id() {
         return Some(sid.as_raw());
     }
+    // No standard id. We only support CAN 2.0a in current version.
     None
 }
 

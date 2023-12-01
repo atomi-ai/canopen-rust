@@ -284,11 +284,19 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     }
 
     fn set_value_and_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), CanAbortCode> {
-        match self.object_directory.set_value(index, sub_index, data) {
+        match self.object_directory.set_value(index, sub_index, data, false) {
             Ok(var) => {
-                if index >= 0x1400 && index < 0x1C00 {
-                    // Update PDO related parameters
-                    self.pdo_objects.update(var);
+                match index {
+                    0x1400..=0x1BFF => {
+                        // Update PDO related parameters
+                        let var_clone = var.clone();
+                        self.update(&var_clone);
+                    },
+                    0x1017 => {
+                        let t: u16 = var.default_value.to();
+                        self.heartbeats_timer = t as u32;
+                    }
+                    _ => {}
                 }
                 Ok(())
             }

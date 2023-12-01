@@ -2,7 +2,7 @@ use crate::data_type::DataType;
 use crate::error::CanAbortCode;
 use crate::prelude::*;
 use crate::value::{get_value, ByteConvertible, Value};
-use crate::util;
+use crate::{info, util};
 use ini_core as ini;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -210,20 +210,39 @@ impl ObjectDirectory {
         }
     }
 
+    pub fn set_value_with_fitting_size(&mut self, index: u16, sub_index: u8, data: &[u8]) {
+        match self.get_mut_variable(index, sub_index) {
+            Err(code) => {},
+            Ok(var) => {
+                if !var.access_type.can_write() {
+                    return;
+                }
+                if var.data_type.size() > data.len() {
+                    return;
+                }
+                var.default_value.data = data[0..var.data_type.size()].to_vec();
+                // info!("set_value_with_fitting_size(), var = {:#x?}", var);
+            }
+        }
+    }
+
     pub fn set_value(
         &mut self,
         index: u16,
         sub_index: u8,
         data: &[u8],
+        ignore_access_check: bool,
     ) -> Result<&Variable, CanAbortCode> {
         match self.get_mut_variable(index, sub_index) {
             Err(code) => Err(code),
             Ok(var) => {
-                if !var.access_type.can_write() {
+                if !ignore_access_check && !var.access_type.can_write() {
                     return Err(CanAbortCode::AttemptToWriteReadOnlyObject);
                 }
 
                 if var.data_type.size() != data.len() {
+                    info!("set_value() error: expect data_type size = {}, input data len = {}",
+                        var.data_type.size(), data.len());
                     if var.data_type.size() > data.len() {
                         return Err(CanAbortCode::DataTypeMismatchLengthTooLow);
                     } else {

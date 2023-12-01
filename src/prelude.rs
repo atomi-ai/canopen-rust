@@ -1,5 +1,6 @@
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod std_items {
+    extern crate alloc;
     pub use std::boxed::Box;
     pub use std::collections::HashMap;
     pub use std::fmt::Debug;
@@ -36,15 +37,15 @@ pub use no_std_items::*;
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {
+        let value_str = alloc::format!($($arg)*);
         #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
         {
-            log::info!($($arg)*);
+            log::info!("[node] {}", value_str);
             // println!($($arg)*);
         }
         #[cfg(all(target_arch = "arm", target_os = "none"))]
         {
-            let value_str = alloc::format!($($arg)*);
-            defmt::info!("{}", defmt::Debug2Format(&value_str));
+            defmt::info!("[node] {}", defmt::Debug2Format(&value_str));
         }
     };
 }
