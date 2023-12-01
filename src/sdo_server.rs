@@ -6,7 +6,9 @@ use crate::cmd_header::{
     SdoEndBlockDownloadCmd, SdoInitBlockUploadCmd,
 };
 use crate::error::CanAbortCode;
+use crate::info;
 use crate::node::Node;
+use crate::object_directory::Variable;
 use crate::prelude::*;
 use crate::sdo_server::SdoState::{
     ConfirmUploadSdoBlock, DownloadSdoBlock, EndSdoBlockDownload, Normal, SdoSegmentDownload,
@@ -198,7 +200,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         if cmd.e() && cmd.s() {
             // Expedite download.
             let data = &req[4..(8 - cmd.n() as usize)];
-            return match self.set_value_and_check(index, sub_index, data) {
+            return match self.set_value_with_check(index, sub_index, data) {
                 Err(code) => Err(code),
                 Ok(_) => self.gen_frame(0x60, index, sub_index, &vec![0, 0, 0, 0]),
             };
@@ -243,7 +245,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             }
             let (i, si) = (self.reserved_index, self.reserved_sub_index);
             let t = buf.clone();
-            match self.set_value_and_check(i, si, t.as_slice()) {
+            match self.set_value_with_check(i, si, t.as_slice()) {
                 Ok(_) => self.genf(&[resp_cmd]),
                 Err(code) => Err(code),
             }
@@ -283,22 +285,49 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         self.next_state(DownloadSdoBlock, res)
     }
 
-    fn set_value_and_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), CanAbortCode> {
+    fn set_value_with_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), CanAbortCode> {
+        // pdo precheck
+        match index {
+            0x1600..=0x17FF | 0x1A00..=0x1BFF => {
+                if sub_index > 0 && sub_index <= crate::pdo::MAX_PDO_MAPPING_LENGTH {
+                    if data.len() != 4 {
+                        info!("set_value_with_check() 1.1, index = {:#?}, sub_index = {}, data = {:?}", index, sub_index, data);
+                        return Err(CanAbortCode::ObjectCannotBeMappedToPDO);
+                    }
+                    let di = (data[3] as u16) << 8 | (data[2] as u16);
+                    let d_si = data[1];
+                    match self.object_directory.get_variable(di, d_si) {
+                        Ok(var) => {
+                            if !var.pdo_mappable {
+                                return Err(CanAbortCode::ObjectCannotBeMappedToPDO)
+                            }
+                            if index < 0x1800 && !var.access_type.can_write() {
+                                return Err(CanAbortCode::ObjectCannotBeMappedToPDO)
+                            }
+                        }
+                        Err(err) => { return Err(err); }
+                    }
+                }
+            }
+            _ => {}
+        }
+
         match self.object_directory.set_value(index, sub_index, data, false) {
             Ok(var) => {
+                // Post check
                 match index {
                     0x1400..=0x1BFF => {
                         // Update PDO related parameters
                         let var_clone = var.clone();
-                        self.update(&var_clone);
+                        self.update(&var_clone)
                     },
                     0x1017 => {
                         let t: u16 = var.default_value.to();
                         self.heartbeats_timer = t as u32;
+                        Ok(())
                     }
-                    _ => {}
+                    _ => {Ok(())}
                 }
-                Ok(())
             }
             Err(code) => {Err(code)}
         }
@@ -326,7 +355,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 let (i, si) = (self.reserved_index, self.reserved_sub_index);
                 // TODO(zephyr): Don't clone in set value in the future.
                 let t = buf.clone();
-                match self.set_value_and_check(i, si, t.as_slice()) {
+                match self.set_value_with_check(i, si, t.as_slice()) {
                     Ok(_) => {}
                     Err(code) => return Err(code),
                 }

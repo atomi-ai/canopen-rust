@@ -13,6 +13,8 @@ use crate::object_directory::{ObjectType, Variable};
 use crate::util::u64_to_vec;
 use crate::value::Value;
 
+pub(crate) const MAX_PDO_MAPPING_LENGTH : u8 = 64;
+
 #[derive(Debug, Clone, Copy)]
 pub enum PdoType {
     TPDO,
@@ -37,7 +39,7 @@ pub struct PdoObject {
 
     // Mapping relative
     pub num_of_map_objs: u8,
-    pub mappings: Vec<(u16, u8, u8)>,  // index, sub_index, length
+    pub mappings: [(u16, u8, u8); MAX_PDO_MAPPING_LENGTH as usize],  // index, sub_index, length
     pub total_length: u8,
     pub cached_data: Vec<u8>,
 }
@@ -77,23 +79,15 @@ impl PdoObject {
         if var.sub_index == 0 {
             let t = var.default_value.to();
             self.num_of_map_objs = t;
-            self.mappings.resize(t as usize, (0, 0, 0));
             // if var.index == 0x1A01 {
             //     info!("xfguo: update_map_params() 1.1, var = {:#x?}, t = {}", var, t);
             // }
-        } else if var.sub_index <= self.num_of_map_objs as u8 {
+        } else {
             let t: u32 = var.default_value.to();
             let si = var.sub_index as usize;
             self.mappings[si - 1] =
                 ((t >> 16) as u16, ((t >> 8) & 0xFF) as u8, (t & 0xFF) as u8);
         }
-
-        let mut total = 0u8;
-        for i in 0..self.num_of_map_objs {
-            let (_, _, l) = self.mappings[i as usize];
-            total += l;
-        }
-        self.total_length = total;
         None
     }
 }
@@ -111,7 +105,7 @@ impl PdoObjects {
             inhibit_time: 0,
             event_timer: 0,
             num_of_map_objs: 0,
-            mappings: vec![],
+            mappings: [(0, 0, 0); MAX_PDO_MAPPING_LENGTH as usize],
             total_length: 0,
             cached_data: vec![],
         };
@@ -126,7 +120,7 @@ impl PdoObjects {
             inhibit_time: 0,
             event_timer: 0,
             num_of_map_objs: 0,
-            mappings: vec![],
+            mappings: [(0, 0, 0); MAX_PDO_MAPPING_LENGTH as usize],
             total_length: 0,
             cached_data: vec![],
         };
@@ -179,7 +173,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
             // info!("xfguo: transmit_pdo_messages 2, count = {}, pdo[{}] = {:#x?}", count, i, pdo);
             // Emit a TPDO message.
-            match self.gen_pdo_frame(pdo.cob_id as u16, pdo.num_of_map_objs, pdo.mappings.clone()) {
+            match self.gen_pdo_frame(pdo.cob_id as u16, pdo.num_of_map_objs,
+                                     (&pdo.mappings[0..pdo.num_of_map_objs as usize]).to_vec()) {
                 Ok(f) => {
                     match self.can_network.transmit(&f) {
                         Err(err) => {
@@ -228,7 +223,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             // info!("save_rpdo_messages() 1.5: v = {:?}", v);
             let r = unpack_data(u, &v);
             // info!("save_rpdo_messages() 1.6: u = {:02x?}, v = {:?}, unpacked r = {:#x?}", u, v, r);
-            if r.len() < pdo.mappings.len() {
+            if r.len() < pdo.num_of_map_objs as usize {
                 // TODO(zephyr): Error, need to send EMGY msg.
                 info!("error: unmatch length: r = {:?}, mapping = {:?}", r, pdo.mappings);
                 continue;
@@ -267,25 +262,41 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         Ok(CAN::Frame::new(StandardId::new(cob_id).unwrap(), packet.as_slice()).unwrap())
     }
 
-    pub fn update(&mut self, var: &Variable) {
+    pub fn update(&mut self, var: &Variable) -> Result<(), CanAbortCode>{
         let (t, x) = (var.index >> 8, (var.index & 0xF) as usize);
-        let cob_id : Option<u16> = match t {
-            0x14 => self.pdo_objects.rpdos[x].update_comm_params(var),
-            0x16 => self.pdo_objects.rpdos[x].update_map_params(var),
-            0x18 => self.pdo_objects.tpdos[x].update_comm_params(var),
-            0x1A => {
-                let res = self.pdo_objects.tpdos[x].update_map_params(var);
-                self.update_cached_pdo(x);
-                res
-            },
-            _ => None,
-        };
-        match cob_id {
-            None => {}
-            Some(id) => { self.pdo_objects.cob_to_index.insert(id, x); }
+        if t < 0x14 || t >= 0x1C {
+            return Ok(())
         }
+        let mut pdo = if t < 0x18 { &mut self.pdo_objects.rpdos[x] } else { &mut self.pdo_objects.tpdos[x] };
+        if t % 4 < 2 {
+            pdo.update_comm_params(var);
+            self.pdo_objects.cob_to_index.insert(pdo.cob_id, x);
+        } else {
+            pdo.update_map_params(var);
+            if var.sub_index == 0 {
+                for si in (1..=pdo.num_of_map_objs as usize).rev() {
+                    match self.object_directory.get_variable(var.index, si as u8) {
+                        Ok(_) => {}
+                        Err(_) => { return Err(CanAbortCode::ObjectCannotBeMappedToPDO) }
+                    }
+                }
+
+                let mut total = 0u8;
+                for si in 0..pdo.num_of_map_objs as usize {
+                    let (_, _, l) = pdo.mappings[si];
+                    total += l;
+                }
+                if total > MAX_PDO_MAPPING_LENGTH {
+                    return Err(CanAbortCode::ExceedPDOSize)
+                }
+                pdo.total_length = total;
+            }
+        }
+
+        Ok(())
     }
 
+    // TODO(zephyr): Not used?
     pub(crate) fn update_cached_pdo(&mut self, tpdo_index: usize) -> Vec<u8> {
         let pdo = &self.pdo_objects.tpdos[tpdo_index];
         let mut t = Vec::new();

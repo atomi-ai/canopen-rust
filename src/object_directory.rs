@@ -241,8 +241,8 @@ impl ObjectDirectory {
                 }
 
                 if var.data_type.size() != data.len() {
-                    info!("set_value() error: expect data_type size = {}, input data len = {}",
-                        var.data_type.size(), data.len());
+                    info!("set_value() error: expect data_type size = {}, input data len = {}, data: {:?}",
+                        var.data_type.size(), data.len(), data);
                     if var.data_type.size() > data.len() {
                         return Err(CanAbortCode::DataTypeMismatchLengthTooLow);
                     } else {

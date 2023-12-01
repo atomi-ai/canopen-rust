@@ -1,7 +1,8 @@
 use embedded_can::{nb::Can, Frame, Id, StandardId};
 use crate::emergency::{EmergencyErrorCode, ErrorRegister};
+use crate::error::CanAbortCode;
 
-use crate::object_directory::ObjectDirectory;
+use crate::object_directory::{ObjectDirectory, Variable};
 use crate::pdo::PdoObjects;
 use crate::prelude::*;
 use crate::sdo_server::SdoState;
@@ -107,8 +108,28 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         for i in (0x1400..0x1C00).step_by(0x200) {
             for j in 0..4 {
                 let idx = i + j;
+
+                match self.object_directory.get_variable(idx, 0) {
+                    Ok(var) => {
+                        let var_clone = var.clone();
+                        let len: u8 = var_clone.default_value.to();
+                        for k in 1..=len {
+                            match self.object_directory.get_variable(idx, k) {
+                                Ok(sub_var) => {
+                                    let sub_var_clone = sub_var.clone();
+                                    self.update(&sub_var_clone).expect("TODO: panic message");
+                                }
+                                Err(_) => {}
+                            }
+                        };
+                        self.update(&var_clone).expect("TODO: panic message");
+                    }
+                    Err(_) => {}
+                };
+
                 let mut len = 0u8;
                 let mut k = 0u8;
+
                 while k <= len {
                     match self.object_directory.get_variable(idx, k) {
                         Ok(var) => {
