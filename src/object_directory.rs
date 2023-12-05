@@ -1,5 +1,3 @@
-// TODO(zephyr): Make all member vars "pub(crate) or private".
-
 use alloc::borrow::ToOwned;
 
 use ini_core as ini;
@@ -216,13 +214,13 @@ pub fn obj_to_record(obj: &ObjectType) -> Option<&Record> {
 
 #[derive(Clone, Debug)]
 pub struct ObjectDirectory {
-    node_id: u16,
+    node_id: u8,
     index_to_object: HashMap<u16, ObjectType>,
     name_to_index: HashMap<String, u16>,
 }
 
 impl ObjectDirectory {
-    pub fn new(node_id: u16, eds_content: &str) -> Result<Self, String> {
+    pub fn new(node_id: u8, eds_content: &str) -> Result<Self, String> {
         let mut od = ObjectDirectory {
             node_id,
             index_to_object: HashMap::new(),
@@ -232,7 +230,7 @@ impl ObjectDirectory {
         Ok(od)
     }
 
-    pub fn node_id(&self) -> u16 {
+    pub fn node_id(&self) -> u8 {
         self.node_id
     }
 }
@@ -486,7 +484,7 @@ impl ObjectDirectory {
 
 fn build_variable(
     properties: &HashMap<String, String>,
-    node_id: u16,
+    node_id: u8,
     name: &String,
     index: u16,
     sub_index: Option<u8>,

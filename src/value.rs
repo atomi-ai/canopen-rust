@@ -190,7 +190,7 @@ fn string_to_value(data_type: &DataType, data_string: &str) -> Result<Value, Str
 pub fn get_value(
     properties: &HashMap<String, String>,
     property_name: &str,
-    node_id: u16,
+    node_id: u8,
     data_type: &DataType,
 ) -> Option<Value> {
     let mut raw = properties

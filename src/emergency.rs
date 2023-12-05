@@ -73,7 +73,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         let erc = er.code();
         let mut v: Vec<u8> = vec![eecl, eech, erc];
         v.extend_from_slice(data);
-        let frame = genf_and_padding(0x080 | self.node_id, v.as_slice());
+        let frame = genf_and_padding(0x080 | self.node_id as u16, v.as_slice());
         self.can_network.transmit(&frame).expect("Errors in transmit packet");
 
         let tmp_count = self.error_count + 1;
@@ -84,7 +84,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
         let mut reset_v: Vec<u8> = vec![0, 0, 0];
         reset_v.extend_from_slice(data);
-        let reset_frame = genf_and_padding(0x080 | self.node_id, reset_v.as_slice());
+        let reset_frame = genf_and_padding(0x080 | self.node_id as u16, reset_v.as_slice());
         self.can_network.transmit(&reset_frame).expect("Errors in transmit reset packet");
     }
 }

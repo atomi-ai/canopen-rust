@@ -52,14 +52,13 @@ pub enum NodeEvent {
 /// this, and we do not wish to introduce the standard (std) library, as it
 /// would compromise our library's current usability in embedded environments.
 pub struct Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
-    pub(crate) node_id: u16,  // TODO(zephyr): should be u8 for "CANOPEN 2.0a"
+    pub(crate) node_id: u8,
     pub(crate) can_network: CAN,
     pub(crate) object_directory: ObjectDirectory,
     pub(crate) pdo_objects: PdoObjects,
 
     // SDO specific data below:
     pub(crate) sdo_state: SdoState,
-    // TODO(zephyr): Let's use &Vec<u8> instead. 这个需要重点思考下。
     pub(crate) read_buf: Option<Vec<u8>>,
     pub(crate) read_buf_index: usize,
     pub(crate) next_read_toggle: u8,
@@ -83,7 +82,7 @@ pub struct Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
 
 impl<CAN> Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
     pub fn new(
-        node_id: u16,
+        node_id: u8,
         eds_content: &str,
         can_network: CAN,
     ) -> Result<Self, String> {
@@ -175,7 +174,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
     pub(crate) fn filter_frame(&self, frame: &CAN::Frame) -> bool {
         if let Some(cob_id) = get_cob_id(frame) {
-            if cob_id & 0x7F == self.node_id {
+            if cob_id & 0x7F == self.node_id as u16 {
                 return false;
             }
         }
@@ -327,7 +326,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         if self.heartbeats_timer > 0 {
             self.heartbeats += 1;
             if self.heartbeats % self.heartbeats_timer == 0 {
-                let frame = genf(0x700 + self.node_id, &[self.state.heartbeat_code()]);
+                let frame = genf(0x700 + self.node_id as u16, &[self.state.heartbeat_code()]);
                 self.can_network.transmit(&frame).expect("Heartbeat error");
             }
         }

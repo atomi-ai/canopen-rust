@@ -59,7 +59,7 @@ pub fn result_to_option<T, Err>(res: Result<T, Err>) -> Option<T> {
     }
 }
 
-pub fn to_value_with_node_id(node_id: u16, expression: &str) -> String {
+pub fn to_value_with_node_id(node_id: u8, expression: &str) -> String {
     // Replace $NODEID with the actual node_id
     let modified_expression = expression.replace("$NODEID", &node_id.to_string());
 

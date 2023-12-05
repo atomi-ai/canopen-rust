@@ -50,14 +50,14 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         let code_bytes = error_code.code().to_le_bytes();
         packet.extend_from_slice(&code_bytes);
         Frame::new(
-            StandardId::new(0x580 | self.node_id).unwrap(),
+            StandardId::new(0x580 | self.node_id as u16).unwrap(),
             packet.as_slice(),
         )
         .unwrap()
     }
 
     fn genf(&self, data: &[u8]) -> Result<CAN::Frame, CanAbortCode> {
-        Ok(genf_and_padding(0x580 | self.node_id, data))
+        Ok(genf_and_padding(0x580 | self.node_id as u16, data))
     }
 
     pub(crate) fn gen_frame(
@@ -433,7 +433,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             // only leave the last one at last for change the state.
             let (s, e) = ((i * 7) as usize, (i * 7 + 7) as usize);
             let frame = genf_and_padding(
-                0x580 | self.node_id,
+                0x580 | self.node_id as u16,
                 flatten(&[&[i + 1], &buf[s..e]]).as_slice(),
             );
             self.can_network

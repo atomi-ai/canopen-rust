@@ -13,18 +13,8 @@ use crate::object_directory::Variable;
 
 pub(crate) const MAX_PDO_MAPPING_LENGTH: u8 = 64;
 
-#[derive(Debug, Clone, Copy)]
-pub enum PdoType {
-    TPDO,
-    RPDO,
-}
-
 #[derive(Debug, Clone)]
 pub struct PdoObject {
-    // TODO(zephyr): Merge tpdo & rpdo.
-    #[allow(dead_code)]
-    pdo_type: PdoType,
-
     // Properties
     is_pdo_valid: bool,
     _not_used_rtr_allowed: bool,
@@ -113,16 +103,13 @@ impl PdoObject {
 
 #[derive(Debug, Clone)]
 pub struct PdoObjects {
-    // TODO(zephyr): Merge rpdo / tpdo objects, because their behavior are very similar.
-    rpdos: [PdoObject; 4],
-    tpdos: [PdoObject; 4],
+    pdos: [PdoObject; 8],
     cob_to_index: HashMap<u16, usize>,
 }
 
 impl PdoObjects {
     pub fn new() -> Self {
-        let default_rpdo = PdoObject {
-            pdo_type: PdoType::RPDO,
+        let default_pdo = PdoObject {
             is_pdo_valid: false,
             _not_used_rtr_allowed: false,
             _not_used_is_29bit_can_id: false,
@@ -136,25 +123,8 @@ impl PdoObjects {
             total_length: 0,
             cached_data: vec![],
         };
-        let default_tpdo = PdoObject {
-            pdo_type: PdoType::TPDO,
-            is_pdo_valid: false,
-            _not_used_rtr_allowed: false,
-            _not_used_is_29bit_can_id: false,
-            largest_sub_index: 5,
-            cob_id: 0x180,
-            transmission_type: 0x01,
-            inhibit_time: 0,
-            event_timer: 0,
-            num_of_map_objs: 0,
-            mappings: [(0, 0, 0); MAX_PDO_MAPPING_LENGTH as usize],
-            total_length: 0,
-            cached_data: vec![],
-        };
-
-        let rpdos = [(); 4].map(|_| default_rpdo.clone());
-        let tpdos = [(); 4].map(|_| default_tpdo.clone());
-        PdoObjects { rpdos, tpdos, cob_to_index: HashMap::new() }
+        let pdos = [(); 8].map(|_| default_pdo.clone());
+        PdoObjects { pdos, cob_to_index: HashMap::new() }
     }
 
     // TODO(zephyr): Reorg functions below again.
@@ -162,11 +132,8 @@ impl PdoObjects {
         self.cob_to_index.get(&cod_id)
     }
 
-    pub fn get_mut_rpdo(&mut self, index: usize) -> &mut PdoObject {
-        &mut self.rpdos[index]
-    }
-
-    pub fn get_rpdo(&self, index: usize) -> &PdoObject { &self.rpdos[index] }
+    pub fn get_mut_rpdo(&mut self, index: usize) -> &mut PdoObject { &mut self.pdos[index] }
+    pub fn get_rpdo(&self, index: usize) -> &PdoObject { &self.pdos[index] }
 }
 
 fn should_trigger_pdo(is_sync: bool, event: NodeEvent, transmission_type: u32, event_times: u32, count: u32) -> bool {
@@ -195,8 +162,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     // TODO(zephyr): Change type to Sync / Event.
     pub(crate) fn transmit_pdo_messages(&mut self, is_sync: bool, event: NodeEvent, count: u32) {
         // info!("xfguo: transmit_pdo_messages 0");
-        for i in 0..4 {
-            let pdo = &self.pdo_objects.tpdos[i];
+        for i in 5..8 {
+            let pdo = &self.pdo_objects.pdos[i];
 
             if !pdo.is_pdo_valid {
                 continue;
@@ -232,7 +199,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
     pub(crate) fn save_rpdo_messages(&mut self, is_sync: bool, event: NodeEvent, count: u32) {
         for i in 0..4 {
-            let pdo = &self.pdo_objects.rpdos[i];
+            let pdo = &self.pdo_objects.pdos[i];
 
             // if count % 10 == 3 { info!("save_rpdo_messages() 1.1, count = {}, pdo = {:?} ", count, pdo); }
 
@@ -276,7 +243,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 self.object_directory.set_value_with_fitting_size(i, si, &a);
             }
 
-            self.pdo_objects.rpdos[i].cached_data.clear();
+            self.pdo_objects.pdos[i].cached_data.clear();
         }
     }
 
@@ -305,7 +272,9 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         if t < 0x14 || t >= 0x1C {
             return Ok(());
         }
-        let pdo = if t < 0x18 { &mut self.pdo_objects.rpdos[x] } else { &mut self.pdo_objects.tpdos[x] };
+        let pdo = if t < 0x18 {
+            &mut self.pdo_objects.pdos[x] } else {
+            &mut self.pdo_objects.pdos[x + 4] };
         if t % 4 < 2 {
             pdo.update_comm_params(var);
             self.pdo_objects.cob_to_index.insert(pdo.cob_id, x);
@@ -337,7 +306,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     // TODO(zephyr): Not used?
     #[allow(dead_code)]
     pub(crate) fn update_cached_pdo(&mut self, tpdo_index: usize) -> Vec<u8> {
-        let pdo = &self.pdo_objects.tpdos[tpdo_index];
+        let pdo = &self.pdo_objects.pdos[tpdo_index];
         let mut t = Vec::new();
         for i in 0..pdo.num_of_map_objs {
             let (idx, sub_idx, bits) = pdo.mappings[i as usize];
