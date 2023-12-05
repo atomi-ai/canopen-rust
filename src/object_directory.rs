@@ -1,9 +1,14 @@
+// TODO(zephyr): Make all member vars "pub(crate) or private".
+
+use alloc::borrow::ToOwned;
+
+use ini_core as ini;
+
+use crate::{info, util};
 use crate::data_type::DataType;
 use crate::error::CanAbortCode;
 use crate::prelude::*;
-use crate::value::{get_value, ByteConvertible, Value};
-use crate::{info, util};
-use ini_core as ini;
+use crate::value::{ByteConvertible, get_value, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccessType {
@@ -19,67 +24,94 @@ impl AccessType {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_str(s: &str) -> Result<Self, String> {
         match s {
-            "rw" => Some(AccessType::new(true, true)),
-            "ro" => Some(AccessType::new(true, false)),
-            "wo" => Some(AccessType::new(false, true)),
-            _ => Some(AccessType::new(false, false)),
+            "rw" => Ok(AccessType::new(true, true)),
+            "ro" => Ok(AccessType::new(true, false)),
+            "wo" => Ok(AccessType::new(false, true)),
+            _ => Ok(AccessType::new(false, false)),
         }
     }
 
-    pub fn can_read(&self) -> bool {
-        self.read_access
-    }
-
-    pub fn can_write(&self) -> bool {
+    pub fn is_readable(&self) -> bool { self.read_access }
+    pub fn is_writable(&self) -> bool {
         self.write_access
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Variable {
-    pub name: String,
-    pub storage_location: String,
-    pub data_type: DataType,
-    pub default_value: Value,
-    pub min: Option<Value>,
-    pub max: Option<Value>,
-    pub pdo_mappable: bool,
-    pub access_type: AccessType,
-    pub parameter_value: Option<Value>,
-    pub index: u16,
-    pub sub_index: u8,
+    name: String,
+    storage_location: String,
+    data_type: DataType,
+    default_value: Value,
+    min: Option<Value>,
+    max: Option<Value>,
+    pdo_mappable: bool,
+    access_type: AccessType,
+    parameter_value: Option<Value>,
+    index: u16,
+    sub_index: u8,
 }
 
 impl Variable {
-    pub fn to_packet(&self, base_cmd: u8) -> Vec<u8> {
-        let mut packet = Vec::new();
-        let v = &self.default_value;
-        let real_cmd = base_cmd | ((4 - v.len() as u8) << 2);
-        packet.push(real_cmd);
-        packet.push((self.index & 0xFF) as u8);
-        packet.push((self.index >> 8) as u8);
-        packet.push(self.sub_index);
-        packet.extend_from_slice(v.as_slice());
-
-        packet
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn data_type(&self) -> DataType {
+        self.data_type
+    }
+    pub fn default_value(&self) -> &Value {
+        &self.default_value
+    }
+    pub fn min(&self) -> &Option<Value> {
+        &self.min
+    }
+    pub fn max(&self) -> &Option<Value> {
+        &self.max
+    }
+    pub fn access_type(&self) -> &AccessType {
+        &self.access_type
+    }
+    pub fn index(&self) -> u16 {
+        self.index
+    }
+    pub fn sub_index(&self) -> u8 {
+        self.sub_index
+    }
+    pub fn pdo_mappable(&self) -> bool {
+        self.pdo_mappable
     }
 }
 
-#[derive(Debug)]
+fn add_member_to_container(name_to_index: &mut HashMap<String, u8>, index_to_variable: &mut HashMap<u8, Variable>, var: Variable) {
+    name_to_index.insert(var.name.clone(), var.sub_index);
+    index_to_variable.insert(var.sub_index, var);
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
 pub struct Array {
-    pub name: String,
-    pub index: u16,
-    pub storage_location: String,
-    pub index_to_variable: HashMap<u8, Variable>,
-    pub name_to_index: HashMap<String, u8>,
+    name: String,
+    index: u16,
+    storage_location: String,
+    index_to_variable: HashMap<u8, Variable>,
+    name_to_index: HashMap<String, u8>,
+}
+
+impl Array {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn index(&self) -> u16 {
+        self.index
+    }
 }
 
 impl Array {
     pub fn add_member(&mut self, var: Variable) {
-        self.name_to_index.insert(var.name.clone(), var.sub_index);
-        self.index_to_variable.insert(var.sub_index, var);
+        add_member_to_container(&mut self.name_to_index, &mut self.index_to_variable, var);
     }
 
     pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, CanAbortCode> {
@@ -106,24 +138,36 @@ impl Array {
         }
         Err(CanAbortCode::ObjectDoesNotExistInObjectDictionary)
     }
-    // pub fn get_variable_by_name(&mut self, name: &str) -> Result<&Variable, CanAbortCode> {
-    //     self.get_variable(*self.name_to_index.get(name).unwrap())
-    // }
 }
 
-#[derive(Debug)]
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
 pub struct Record {
-    pub name: String,
-    pub index: u16,
-    pub storage_location: String,
-    pub index_to_variable: HashMap<u8, Variable>,
-    pub name_to_index: HashMap<String, u8>,
+    name: String,
+    index: u16,
+    storage_location: String,
+    index_to_variable: HashMap<u8, Variable>,
+    name_to_index: HashMap<String, u8>,
+}
+
+impl Record {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn index(&self) -> u16 {
+        self.index
+    }
+    pub fn index_to_variable(&self) -> &HashMap<u8, Variable> {
+        &self.index_to_variable
+    }
+    pub fn name_to_index(&self) -> &HashMap<String, u8> {
+        &self.name_to_index
+    }
 }
 
 impl Record {
     pub fn add_member(&mut self, var: Variable) {
-        self.name_to_index.insert(var.name.clone(), var.sub_index);
-        self.index_to_variable.insert(var.sub_index, var);
+        add_member_to_container(&mut self.name_to_index, &mut self.index_to_variable, var);
     }
 
     pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, CanAbortCode> {
@@ -142,7 +186,7 @@ impl Record {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ObjectType {
     Variable(Variable),
     Array(Array),
@@ -170,57 +214,55 @@ pub fn obj_to_record(obj: &ObjectType) -> Option<&Record> {
     None
 }
 
+#[derive(Clone, Debug)]
 pub struct ObjectDirectory {
-    pub node_id: u16,
+    node_id: u16,
     index_to_object: HashMap<u16, ObjectType>,
     name_to_index: HashMap<String, u16>,
 }
 
-impl ObjectDirectory {}
-
 impl ObjectDirectory {
-    pub fn new(node_id: u16, eds_content: &str) -> Self {
+    pub fn new(node_id: u16, eds_content: &str) -> Result<Self, String> {
         let mut od = ObjectDirectory {
             node_id,
             index_to_object: HashMap::new(),
             name_to_index: HashMap::new(),
         };
-        od.load_from_content(eds_content)
-            .expect("Failed to load EDS content");
-        od
+        od.load_from_content(eds_content)?;
+        Ok(od)
     }
 
+    pub fn node_id(&self) -> u16 {
+        self.node_id
+    }
+}
+
+impl ObjectDirectory {
     pub fn add_member(&mut self, index: u16, name: String, obj: ObjectType) {
         self.index_to_object.insert(index, obj);
         self.name_to_index.insert(name, index);
     }
 
-    pub fn add_sub_member(&mut self, index: u16, var: Variable) {
-        let obj = self.index_to_object.get_mut(&index).unwrap();
-        match obj {
-            ObjectType::Record(record) => {
-                record.add_member(var);
-            }
-            ObjectType::Array(array) => {
-                array.add_member(var);
-            }
-            ObjectType::Variable(_) => {
-                panic!("no subindex for a Variable object");
-            }
+    pub fn add_sub_member(&mut self, index: u16, var: Variable) -> Result<(), String> {
+        match self.index_to_object.get_mut(&index) {
+            None => { Err(format!("No id:{:x?}", index)) }
+            Some(ObjectType::Record(record)) => { Ok(record.add_member(var)) }
+            Some(ObjectType::Array(array)) => { Ok(array.add_member(var)) }
+            _ => { Err(format!("no subindex for a Variable object")) }
         }
     }
 
     pub fn set_value_with_fitting_size(&mut self, index: u16, sub_index: u8, data: &[u8]) {
         match self.get_mut_variable(index, sub_index) {
-            Err(code) => {},
+            Err(_) => {}
             Ok(var) => {
-                if !var.access_type.can_write() {
+                if !var.access_type.is_writable() {
                     return;
                 }
                 if var.data_type.size() > data.len() {
                     return;
                 }
-                var.default_value.data = data[0..var.data_type.size()].to_vec();
+                var.default_value.set_data(data[0..var.data_type.size()].to_vec());
                 // info!("set_value_with_fitting_size(), var = {:#x?}", var);
             }
         }
@@ -236,7 +278,7 @@ impl ObjectDirectory {
         match self.get_mut_variable(index, sub_index) {
             Err(code) => Err(code),
             Ok(var) => {
-                if !ignore_access_check && !var.access_type.can_write() {
+                if !ignore_access_check && !var.access_type.is_writable() {
                     return Err(CanAbortCode::AttemptToWriteReadOnlyObject);
                 }
 
@@ -256,7 +298,7 @@ impl ObjectDirectory {
                 //     index,
                 //     var
                 // );
-                var.default_value.data = data.to_vec();
+                var.default_value.set_data(data.to_vec());
                 // info!(
                 //     "xfguo: after set: get current value: {:?}",
                 //     self.index_to_object.get(&index)
@@ -269,7 +311,7 @@ impl ObjectDirectory {
     pub fn get_variable(&mut self, index: u16, sub_index: u8) -> Result<&Variable, CanAbortCode> {
         match self.get_mut_variable(index, sub_index) {
             Ok(var) => {
-                if !var.access_type.can_read() {
+                if !var.access_type.is_readable() {
                     return Err(CanAbortCode::AttemptToReadWriteOnlyObject);
                 }
                 // info!("xfguo: get var: {:?}", var);
@@ -316,8 +358,10 @@ impl ObjectDirectory {
     ) -> Result<(), String> {
         if util::is_top(section_name) {
             let index = u16::from_str_radix(section_name, 16).map_err(|_| "Invalid index")?;
-            let name = properties.get("ParameterName").unwrap();
-            let ot = util::parse_number(properties.get("ObjectType").unwrap());
+            let name = properties.get("ParameterName").ok_or_else(
+                || format!("No 'ParameterName' in section <{}>", section_name))?;
+            let ot = util::parse_number(properties.get("ObjectType").ok_or_else(
+                || format!("No 'ObjectType' in section <{}>", section_name))?);
             match ot {
                 7 => {
                     let variable =
@@ -330,10 +374,8 @@ impl ObjectDirectory {
                     let mut array = Array {
                         name: name.to_string(),
                         index,
-                        storage_location: properties
-                            .get("StorageLocation")
-                            .unwrap_or(&String::from(""))
-                            .clone(),
+                        storage_location: properties.get("StorageLocation")
+                            .unwrap_or(&String::from("")).to_owned(),
                         index_to_variable: HashMap::new(),
                         name_to_index: HashMap::new(),
                     };
@@ -344,9 +386,7 @@ impl ObjectDirectory {
                             index,
                             sub_index: 0,
                             data_type: DataType::Unsigned8,
-                            default_value: Value {
-                                data: 0u32.to_bytes(),
-                            },
+                            default_value: Value::new(0u32.to_bytes()),
                             min: None,
                             max: None,
                             pdo_mappable: false,
@@ -356,8 +396,7 @@ impl ObjectDirectory {
                         };
                         array.add_member(last_subindex);
                         array.add_member(
-                            build_variable(properties, self.node_id, name, index, Some(1u8))
-                                .unwrap(),
+                            build_variable(properties, self.node_id, name, index, Some(1u8))?
                         );
                     }
                     self.add_member(index, name.clone(), ObjectType::Array(array));
@@ -381,12 +420,17 @@ impl ObjectDirectory {
                 }
             }
         } else if let Some((index, sub_index)) = util::is_sub(section_name) {
-            let name = properties.get("ParameterName").unwrap();
+            let name = properties.get("ParameterName").ok_or_else(
+                || format!("No name in section <{}>", section_name))?;
             let variable = build_variable(properties, self.node_id, name, index, Some(sub_index))?;
-            self.add_sub_member(index, variable);
+            self.add_sub_member(index, variable)?;
         } else if let Some(index) = util::is_name(section_name) {
             // Logic related to CompactSubObj
-            let num_of_entries: u8 = properties.get("NrOfEntries").unwrap().parse().unwrap();
+            let t = properties.get("NrOfEntries").ok_or_else(
+                || format!("No NrOfEntries in section <{}>", section_name))?;
+            let num_of_entries = t.parse().or_else(
+                |err| Err(format!("Errors in parsing '{}' in section <{}>, err: {:?}",
+                                  t, section_name, err)))?;
             if let Some(ObjectType::Array(arr)) = self.index_to_object.get_mut(&index) {
                 if let Some(src_var) = arr.index_to_variable.get(&1u8) {
                     let cloned_src_var = src_var.clone();
@@ -409,7 +453,7 @@ impl ObjectDirectory {
         Ok(())
     }
 
-    pub fn load_from_content(&mut self, content: &str) -> Result<(), Error> {
+    pub fn load_from_content(&mut self, content: &str) -> Result<(), String> {
         let mut current_section_name: Option<String> = None;
         let mut current_properties: HashMap<String, String> = HashMap::new();
 
@@ -417,8 +461,8 @@ impl ObjectDirectory {
             match item {
                 ini::Item::Section(name) => {
                     if let Some(section_name) = current_section_name.take() {
-                        self.process_section(&section_name, &current_properties)
-                            .expect(section_name.as_str());
+                        // Get all properties, process the section.
+                        self.process_section(&section_name, &current_properties)?;
                         current_properties.clear();
                     }
                     current_section_name = Some(String::from(name));
@@ -433,8 +477,7 @@ impl ObjectDirectory {
 
         // 处理最后一个 section
         if let Some(section_name) = current_section_name {
-            self.process_section(&section_name, &current_properties)
-                .expect(section_name.as_str());
+            self.process_section(&section_name, &current_properties)?
         }
 
         Ok(())
@@ -457,7 +500,7 @@ fn build_variable(
             .get("AccessType")
             .unwrap_or(&String::from("rw"))
             .to_lowercase(),
-    );
+    )?;
     let pdo_mapping = properties
         .get("PDOMapping")
         .unwrap_or(&String::from("0"))
@@ -475,25 +518,21 @@ fn build_variable(
     let min = get_value(&properties, "LowLimit", node_id, &dt);
     let max = get_value(&properties, "HighLimit", node_id, &dt);
 
-    let default_value = get_value(&properties, "DefaultValue", node_id, &dt).unwrap_or(Value {
-        data: dt.default_value(),
-    });
-    // if index == 0x1200 && sub_index == Some(1) {
-    //     xprintln!("xfguo: debug");
-    // }
+    let default_value = get_value(&properties, "DefaultValue", node_id, &dt).unwrap_or(
+        Value::new(dt.default_value()));
     let parameter_value = get_value(&properties, "ParameterValue", node_id, &dt);
 
     let variable = Variable {
         name: name.clone(),
-        storage_location: storage_location,
+        storage_location,
         data_type: dt,
-        access_type: access_type.unwrap(),
+        access_type,
         pdo_mappable: pdo_mapping,
-        min: min,
-        max: max,
-        default_value: default_value,
-        parameter_value: parameter_value,
-        index: index,
+        min,
+        max,
+        default_value,
+        parameter_value,
+        index,
         sub_index: sub_index.unwrap_or(0),
     };
 

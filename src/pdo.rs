@@ -9,11 +9,9 @@ use hashbrown::HashMap;
 use crate::error::CanAbortCode;
 use crate::info;
 use crate::node::{Node, NodeEvent};
-use crate::object_directory::{ObjectType, Variable};
-use crate::util::u64_to_vec;
-use crate::value::Value;
+use crate::object_directory::Variable;
 
-pub(crate) const MAX_PDO_MAPPING_LENGTH : u8 = 64;
+pub(crate) const MAX_PDO_MAPPING_LENGTH: u8 = 64;
 
 #[derive(Debug, Clone, Copy)]
 pub enum PdoType {
@@ -23,49 +21,70 @@ pub enum PdoType {
 
 #[derive(Debug, Clone)]
 pub struct PdoObject {
-    pub pdo_type: PdoType,
+    // TODO(zephyr): Merge tpdo & rpdo.
+    #[allow(dead_code)]
+    pdo_type: PdoType,
 
     // Properties
-    pub is_pdo_valid: bool,
-    pub _not_used_rtr_allowed: bool,
-    pub _not_used_is_29bit_can_id: bool,  // to differentiate CAN2.0A / CAN2.0B
+    is_pdo_valid: bool,
+    _not_used_rtr_allowed: bool,
+    _not_used_is_29bit_can_id: bool,  // to differentiate CAN2.0A / CAN2.0B
 
     // Communication relativeX
-    pub largest_sub_index: u8,
-    pub cob_id: u16,
-    pub transmission_type: u8,
-    pub inhibit_time: u16,
-    pub event_timer: u16,
+    largest_sub_index: u8,
+    cob_id: u16,
+    transmission_type: u8,
+    inhibit_time: u16,
+    event_timer: u16,
 
     // Mapping relative
-    pub num_of_map_objs: u8,
-    pub mappings: [(u16, u8, u8); MAX_PDO_MAPPING_LENGTH as usize],  // index, sub_index, length
-    pub total_length: u8,
-    pub cached_data: Vec<u8>,
+    num_of_map_objs: u8,
+    mappings: [(u16, u8, u8); MAX_PDO_MAPPING_LENGTH as usize],
+    // index, sub_index, length
+    total_length: u8,
+    // TODO(zephyr): 重新整理一下cached_data的使用。
+    cached_data: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PdoObjects {
-    // TODO(zephyr): Merge rpdo / tpdo objects, because their behavior are very similar.
-    pub rpdos: [PdoObject; 4],
-    pub tpdos: [PdoObject; 4],
-    pub cob_to_index: HashMap<u16, usize>,
+impl PdoObject {
+    pub fn total_length(&self) -> u8 {
+        self.total_length
+    }
+    pub fn cached_data(&self) -> &Vec<u8> {
+        &self.cached_data
+    }
+    pub fn largest_sub_index(&self) -> u8 {
+        self.largest_sub_index
+    }
+    pub fn cob_id(&self) -> u16 {
+        self.cob_id
+    }
+    pub fn transmission_type(&self) -> u8 {
+        self.transmission_type
+    }
+    pub fn event_timer(&self) -> u16 {
+        self.event_timer
+    }
+    pub fn set_cached_data(&mut self, cached_data: &[u8]) {
+        self.cached_data.clear();
+        self.cached_data.extend_from_slice(cached_data);
+    }
 }
 
 impl PdoObject {
     pub fn update_comm_params(&mut self, var: &Variable) -> Option<u16> {
-        if var.sub_index == 1 {
-            let t: u32 = var.default_value.to();
+        if var.sub_index() == 1 {
+            let t: u32 = var.default_value().to();
             self.is_pdo_valid = (t >> 31 & 0x1) == 0;
             self._not_used_rtr_allowed = (t >> 30 & 0x1) == 1;
             self._not_used_is_29bit_can_id = (t >> 29 & 0x1) == 1;
             self.cob_id = (t & 0xFFFF) as u16;
         }
-        match var.sub_index {
-            0 => self.largest_sub_index = var.default_value.to(),
-            2 => self.transmission_type = var.default_value.to(),
-            3 => self.inhibit_time = var.default_value.to(),
-            5 => self.event_timer = var.default_value.to(),
+        match var.sub_index() {
+            0 => self.largest_sub_index = var.default_value().to(),
+            2 => self.transmission_type = var.default_value().to(),
+            3 => self.inhibit_time = var.default_value().to(),
+            5 => self.event_timer = var.default_value().to(),
             _ => {}
         }
         Some(self.cob_id)
@@ -76,20 +95,28 @@ impl PdoObject {
 
     pub fn update_map_params(&mut self, var: &Variable) -> Option<u16> {
         // info!("xfguo: update_map_params() 0. var = {:#x?}", var);
-        if var.sub_index == 0 {
-            let t = var.default_value.to();
+        if var.sub_index() == 0 {
+            let t = var.default_value().to();
             self.num_of_map_objs = t;
             // if var.index == 0x1A01 {
             //     info!("xfguo: update_map_params() 1.1, var = {:#x?}, t = {}", var, t);
             // }
         } else {
-            let t: u32 = var.default_value.to();
-            let si = var.sub_index as usize;
+            let t: u32 = var.default_value().to();
+            let si = var.sub_index() as usize;
             self.mappings[si - 1] =
                 ((t >> 16) as u16, ((t >> 8) & 0xFF) as u8, (t & 0xFF) as u8);
         }
         None
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PdoObjects {
+    // TODO(zephyr): Merge rpdo / tpdo objects, because their behavior are very similar.
+    rpdos: [PdoObject; 4],
+    tpdos: [PdoObject; 4],
+    cob_to_index: HashMap<u16, usize>,
 }
 
 impl PdoObjects {
@@ -129,6 +156,17 @@ impl PdoObjects {
         let tpdos = [(); 4].map(|_| default_tpdo.clone());
         PdoObjects { rpdos, tpdos, cob_to_index: HashMap::new() }
     }
+
+    // TODO(zephyr): Reorg functions below again.
+    pub fn get_rpdo_index(&self, cod_id: u16) -> Option<&usize> {
+        self.cob_to_index.get(&cod_id)
+    }
+
+    pub fn get_mut_rpdo(&mut self, index: usize) -> &mut PdoObject {
+        &mut self.rpdos[index]
+    }
+
+    pub fn get_rpdo(&self, index: usize) -> &PdoObject { &self.rpdos[index] }
 }
 
 fn should_trigger_pdo(is_sync: bool, event: NodeEvent, transmission_type: u32, event_times: u32, count: u32) -> bool {
@@ -168,7 +206,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             // info!("xfguo: transmit_pdo_messages 1.1, count = {}, pdo[{}] = {:#x?}", count, i, pdo);
             let tt = pdo.transmission_type as u32;
             if !should_trigger_pdo(is_sync, event, tt, pdo.event_timer as u32, count) {
-                continue
+                continue;
             }
 
             // info!("xfguo: transmit_pdo_messages 2, count = {}, pdo[{}] = {:#x?}", count, i, pdo);
@@ -205,7 +243,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             // Skip if don't need to transmit a PDO msg.
             let tt = pdo.transmission_type as u32;
             if !should_trigger_pdo(is_sync, event, tt, pdo.event_timer as u32, count) {
-                continue
+                continue;
             }
 
             // info!("save_rpdo_messages() 1.3, count = {}, pdo = {:#x?} ", count, pdo);
@@ -232,7 +270,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 let idx = ii as usize;
                 let (i, si, _) = pdo.mappings[idx];
                 let (data, _) = r[idx];
-                let mut a = data.to_le_bytes();
+                let a = data.to_le_bytes();
                 // info!("xfguo: a = {:02x?}, data = {:0x?}", a, data);
                 info!("rpdo update variable: [{:04x?}:{:02x?}] = {:x?}", i, si, a);
                 self.object_directory.set_value_with_fitting_size(i, si, &a);
@@ -251,7 +289,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             let (idx, sub_idx, bits) = mappings[i as usize];
             match self.object_directory.get_variable(idx, sub_idx) {
                 Ok(v) => {
-                    t.push((vec_to_u64(&v.default_value.data), bits));
+                    t.push((vec_to_u64(&v.default_value().data()), bits));
                     // info!("xfguo: gen_pdo_frame() 2.2.1, {:#x?}:{:#x?} => {:#x?}, t = {:#x?}",
                     //     idx, sub_idx, v, t);
                 }
@@ -262,22 +300,22 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         Ok(CAN::Frame::new(StandardId::new(cob_id).unwrap(), packet.as_slice()).unwrap())
     }
 
-    pub fn update(&mut self, var: &Variable) -> Result<(), CanAbortCode>{
-        let (t, x) = (var.index >> 8, (var.index & 0xF) as usize);
+    pub fn update(&mut self, var: &Variable) -> Result<(), CanAbortCode> {
+        let (t, x) = (var.index() >> 8, (var.index() & 0xF) as usize);
         if t < 0x14 || t >= 0x1C {
-            return Ok(())
+            return Ok(());
         }
-        let mut pdo = if t < 0x18 { &mut self.pdo_objects.rpdos[x] } else { &mut self.pdo_objects.tpdos[x] };
+        let pdo = if t < 0x18 { &mut self.pdo_objects.rpdos[x] } else { &mut self.pdo_objects.tpdos[x] };
         if t % 4 < 2 {
             pdo.update_comm_params(var);
             self.pdo_objects.cob_to_index.insert(pdo.cob_id, x);
         } else {
             pdo.update_map_params(var);
-            if var.sub_index == 0 {
+            if var.sub_index() == 0 {
                 for si in (1..=pdo.num_of_map_objs as usize).rev() {
-                    match self.object_directory.get_variable(var.index, si as u8) {
+                    match self.object_directory.get_variable(var.index(), si as u8) {
                         Ok(_) => {}
-                        Err(_) => { return Err(CanAbortCode::ObjectCannotBeMappedToPDO) }
+                        Err(_) => { return Err(CanAbortCode::ObjectCannotBeMappedToPDO); }
                     }
                 }
 
@@ -287,7 +325,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                     total += l;
                 }
                 if total > MAX_PDO_MAPPING_LENGTH {
-                    return Err(CanAbortCode::ExceedPDOSize)
+                    return Err(CanAbortCode::ExceedPDOSize);
                 }
                 pdo.total_length = total;
             }
@@ -297,6 +335,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     }
 
     // TODO(zephyr): Not used?
+    #[allow(dead_code)]
     pub(crate) fn update_cached_pdo(&mut self, tpdo_index: usize) -> Vec<u8> {
         let pdo = &self.pdo_objects.tpdos[tpdo_index];
         let mut t = Vec::new();
@@ -304,7 +343,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             let (idx, sub_idx, bits) = pdo.mappings[i as usize];
             match self.object_directory.get_variable(idx, sub_idx) {
                 Ok(v) => {
-                    t.push((vec_to_u64(&v.default_value.data), bits));
+                    t.push((vec_to_u64(&v.default_value().data()), bits));
                 }
                 Err(_) => return Vec::new()
             }

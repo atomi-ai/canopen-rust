@@ -1,3 +1,5 @@
+// TODO(zephyr): Remove the file?
+
 // It doesn't seem to be very necessary, it's not done yet.
 // Please don't use.
 use crate::prelude::*;
@@ -42,8 +44,6 @@ impl<F: Frame + Debug, E: Error> SDOClient<F, E> {
 
     fn parse_response(&self, frame: &F) -> Option<Value> {
         let len = 4 - ((frame.data()[0] >> 2) & 0b11) as usize;
-        Some(Value {
-            data: frame.data()[4..(4 + len)].to_vec(),
-        })
+        Some(Value::new(frame.data()[4..(4 + len)].to_vec()))
     }
 }

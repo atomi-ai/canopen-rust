@@ -2,10 +2,9 @@ use crate::data_type::DataType;
 use crate::prelude::*;
 use crate::util;
 
-// TODO(zephyr): Use pub(crate) to replace pub for package internal definitions
 #[derive(Clone, Debug)]
 pub struct Value {
-    pub data: Vec<u8>,
+    data: Vec<u8>,
 }
 
 impl Value {
@@ -19,6 +18,13 @@ impl Value {
 
     pub fn as_slice(&self) -> &[u8] {
         &self.data
+    }
+
+    pub fn data(&self) -> &Vec<u8> {
+        &self.data
+    }
+    pub fn set_data(&mut self, data: Vec<u8>) {
+        self.data = data;
     }
 }
 

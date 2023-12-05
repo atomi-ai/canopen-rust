@@ -4,7 +4,6 @@ mod std_items {
     pub use std::boxed::Box;
     pub use std::collections::HashMap;
     pub use std::fmt::Debug;
-    pub use std::fmt::Error;
     pub use std::*;
     //
     // pub fn sleep(ms: u64) {
@@ -46,6 +45,51 @@ macro_rules! info {
         #[cfg(all(target_arch = "arm", target_os = "none"))]
         {
             defmt::info!("[node] {}", defmt::Debug2Format(&value_str));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! debug {
+    ($($arg:tt)*) => {
+        let value_str = alloc::format!($($arg)*);
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        {
+            log::debug!("[node] {}", value_str);
+        }
+        #[cfg(all(target_arch = "arm", target_os = "none"))]
+        {
+            defmt::debug!("[node] {}", defmt::Debug2Format(&value_str));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)*) => {
+        let value_str = alloc::format!($($arg)*);
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        {
+            log::warn!("[node] {}", value_str);
+        }
+        #[cfg(all(target_arch = "arm", target_os = "none"))]
+        {
+            defmt::warn!("[node] {}", defmt::Debug2Format(&value_str));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)*) => {
+        let value_str = alloc::format!($($arg)*);
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        {
+            log::error!("[node] {}", value_str);
+        }
+        #[cfg(all(target_arch = "arm", target_os = "none"))]
+        {
+            defmt::error!("[node] {}", defmt::Debug2Format(&value_str));
         }
     };
 }

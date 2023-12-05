@@ -8,7 +8,6 @@ use crate::cmd_header::{
 use crate::error::CanAbortCode;
 use crate::info;
 use crate::node::Node;
-use crate::object_directory::Variable;
 use crate::prelude::*;
 use crate::sdo_server::SdoState::{
     ConfirmUploadSdoBlock, DownloadSdoBlock, EndSdoBlockDownload, Normal, SdoSegmentDownload,
@@ -133,7 +132,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
     fn initiate_upload(&mut self, index: u16, sub_index: u8) -> Result<CAN::Frame, CanAbortCode> {
         let data = match self.object_directory.get_variable(index, sub_index) {
-            Ok(var) => &var.default_value.data,
+            Ok(var) => var.default_value().data(),
             Err(code) => return Err(code),
         };
 
@@ -298,10 +297,10 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                     let d_si = data[1];
                     match self.object_directory.get_variable(di, d_si) {
                         Ok(var) => {
-                            if !var.pdo_mappable {
+                            if !var.pdo_mappable() {
                                 return Err(CanAbortCode::ObjectCannotBeMappedToPDO)
                             }
-                            if index < 0x1800 && !var.access_type.can_write() {
+                            if index < 0x1800 && !var.access_type().is_writable() {
                                 return Err(CanAbortCode::ObjectCannotBeMappedToPDO)
                             }
                         }
@@ -322,7 +321,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                         self.update(&var_clone)
                     },
                     0x1017 => {
-                        let t: u16 = var.default_value.to();
+                        let t: u16 = var.default_value().to();
                         self.heartbeats_timer = t as u32;
                         Ok(())
                     }
@@ -404,7 +403,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         self.reserved_sub_index = sub_index;
         match self.object_directory.get_variable(index, sub_index) {
             Ok(var) => {
-                self.read_buf = Some(var.default_value.data.clone());
+                self.read_buf = Some(var.default_value().data().clone());
                 self.read_buf_index = 0;
             }
             Err(code) => return Err(code),
