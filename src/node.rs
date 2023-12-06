@@ -1,4 +1,4 @@
-use embedded_can::{nb::Can, Frame, Id, StandardId};
+use embedded_can::{nb::Can, Frame};
 use crate::emergency::{EmergencyErrorCode, ErrorRegister};
 
 use crate::object_directory::ObjectDirectory;
@@ -6,8 +6,9 @@ use crate::pdo::PdoObjects;
 use crate::prelude::*;
 use crate::sdo_server::SdoState;
 use crate::sdo_server::SdoState::Normal;
-use crate::util::{genf, get_cob_id};
-use crate::info;
+use crate::util::{create_frame, get_cob_id, make_abort_error};
+use crate::{error, info};
+use crate::error::ErrorCode;
 
 const DEFAULT_BLOCK_SIZE: u8 = 0x7F;
 
@@ -65,7 +66,7 @@ pub struct Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
     pub(crate) write_buf: Option<Vec<u8>>,
     pub(crate) reserved_index: u16,
     pub(crate) reserved_sub_index: u8,
-    pub(crate) write_data_size: u32,
+    pub(crate) write_data_size: usize,
     pub(crate) need_crc: bool,
     pub(crate) block_size: u8,
     // sequences_per_block?
@@ -85,7 +86,7 @@ impl<CAN> Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
         node_id: u8,
         eds_content: &str,
         can_network: CAN,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, ErrorCode> {
         let object_directory = ObjectDirectory::new(node_id, eds_content)?;
         let pdo_objects = PdoObjects::new();
         let mut node = Node {
@@ -122,7 +123,7 @@ impl<CAN> Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
 }
 
 impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
-    pub(crate) fn update_pdo_params(&mut self) -> Result<(), String> {
+    pub(crate) fn update_pdo_params(&mut self) -> Result<(), ErrorCode> {
         for i in (0x1400..0x1C00).step_by(0x200) {
             for j in 0..4 {
                 let idx = i + j;
@@ -135,12 +136,18 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                             match self.object_directory.get_variable(idx, k) {
                                 Ok(sub_var) => {
                                     let sub_var_clone = sub_var.clone();
-                                    self.update(&sub_var_clone).expect("TODO: panic message");
+                                    self.update(&sub_var_clone).map_err(|abort_code| {
+                                        make_abort_error(abort_code, format!(
+                                            "Errors in updating sub variable: {:x?}", sub_var_clone).as_str())
+                                    })?;
                                 }
                                 Err(_) => {}
                             }
                         };
-                        self.update(&var_clone).expect("TODO: panic message");
+                        self.update(&var_clone).map_err(|abort_code| {
+                            make_abort_error(abort_code, format!(
+                                "Errors in updating variable: {:x?}", var_clone).as_str())
+                        })?;
                     }
                     Err(_) => {}
                 };
@@ -152,15 +159,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                     match self.object_directory.get_variable(idx, k) {
                         Ok(var) => {
                             let var_clone = var.clone();
-                            // TODO(zephyr): change to "self.update(&var_clone)?".
-                            // Need to reorg errors.
-                            match self.update(&var_clone) {
-                                Ok(_) => {}
-                                Err(code) => {
-                                    return Err(format!(
-                                        "Get {:?} in update var: {:x?}", code, var_clone))
-                                }
-                            }
+                            self.update(&var_clone).map_err(|code| make_abort_error(
+                                code, format!("Get {:?} in update var: {:x?}", code, var_clone).as_str()))?;
                             if k == 0 { len = var_clone.default_value().to(); }
                         }
                         _ => {}
@@ -193,14 +193,14 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         // specific?
     }
 
-    fn process_nmt_frame(&mut self, frame: &CAN::Frame) -> Option<CAN::Frame> {
+    fn process_nmt_frame(&mut self, frame: &CAN::Frame) {
         if frame.dlc() != 2 {
-            return None;
+            return;
         }
         let (cs, nid) = (frame.data()[0], frame.data()[1]);
         info!("process_nmt_frame 1: cs = {:#x}, nid = {}", cs, nid);
         if nid != self.node_id as u8 {
-            return None;
+            return;
         }
         match cs {
             1 => {
@@ -228,48 +228,47 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             },
             _ => {},
         }
-        None
     }
 
     // TODO(zephyr): return type to "Result<Option<CAN::Frame>, OurErr>"
     // Reorg our errors instead of String.
-    fn process_rpdo_frame(&mut self, frame: &CAN::Frame) -> Option<CAN::Frame> {
+    fn process_rpdo_frame(&mut self, frame: &CAN::Frame) {
         if let Some(cob_id) = get_cob_id(frame) {
             if let Some(&index) = self.pdo_objects.get_rpdo_index(cob_id) {
                 let rpdo = &mut self.pdo_objects.get_mut_rpdo(index);
                 if frame.data().len() != ((rpdo.total_length() + 7) / 8) as usize {
                     // trigger emergency
                     let bytes = cob_id.to_le_bytes();
-                    self.trigger_emergency(EmergencyErrorCode::PdoNotProcessed, ErrorRegister::GenericError, &bytes);
-                    return None
+                    match self.trigger_emergency(
+                        EmergencyErrorCode::PdoNotProcessed, ErrorRegister::GenericError, &bytes) {
+                        Ok(_) => {}
+                        Err(err_code) => {
+                            error!("Errors in generating PdoNotProcessed EMCY frame,\
+                             cod_id = {}, error_code = {:?}", cob_id, err_code);
+                        }
+                    }
+                    return
                 }
                 rpdo.set_cached_data(frame.data());
             }
         }
-        None
     }
 
-    pub fn communication_object_dispatch(&mut self, frame: CAN::Frame) -> Option<CAN::Frame> {
-        if let Some(cob_id) = get_cob_id(&frame) {
-            match cob_id & 0xFF80 {
-                0x000 => self.process_nmt_frame(&frame),
-                0x200 | 0x300 | 0x400 | 0x500 => self.process_rpdo_frame(&frame),
-                0x080 => self.process_sync_frame(),
-                0x600 => self.dispatch_sdo_request(&frame),
-                _ => None,
+    pub fn transmit(&mut self, frame: &CAN::Frame) {
+        match self.can_network.transmit(&frame) {
+            Ok(_) => {
+                info!("Sent frame {:x?}", frame);
             }
-        } else {
-            // TODO(zephyr): Do we need to reply something here to notify that
-            // we don't support CAN2.0B currently?
-            None
+            Err(err) => {
+                error!("Errors in transmit frame {:x?}, err: {:?}", frame, err);
+            }
         }
     }
 
-    pub fn init(&mut self) {
-        let ready_frame = Frame::new(StandardId::new(0x234).unwrap(), &[1, 2, 3, 5]).expect("");
-        self.can_network
-            .transmit(&ready_frame)
-            .expect("Failed to send CAN frame");
+    pub fn init(&mut self) -> Result<(), ErrorCode> {
+        // TODO(zephyr): this is informal, let's figure out a formal way later or just remove this.
+        let ready_frame = create_frame(0x234, &[1, 2, 3, 5])?;
+        Ok(self.transmit(&ready_frame))
     }
 
     // Need to be non-blocking.
@@ -283,19 +282,14 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             }
         };
         info!("got frame: {:?}", frame);
-
-        if let Some(response) = self.communication_object_dispatch(frame) {
-            if let Id::Standard(sid) = response.id() {
-                if sid.as_raw() == 0 {
-                    // Don't need to send any reply for empty frame.
-                    return;
-                }
+        if let Some(cob_id) = get_cob_id(&frame) {
+            match cob_id & 0xFF80 {
+                0x000 => self.process_nmt_frame(&frame),
+                0x200..=0x500 => self.process_rpdo_frame(&frame),
+                0x080 => self.process_sync_frame(),
+                0x600 => self.process_sdo_frame(&frame),
+                _ => {},
             }
-            // info!("[node] to send reply : {:?}", response);
-            self.can_network
-                .transmit(&response)
-                .expect("Failed to send CAN frame");
-            info!("sent a frame : {:?}", response);
         }
     }
 
@@ -312,13 +306,12 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         }
     }
 
-    fn process_sync_frame(&mut self) -> Option<CAN::Frame> {
+    fn process_sync_frame(&mut self) {
         if self.state == NodeState::Operational {
             self.sync_count += 1;
             self.save_rpdo_messages(true, NodeEvent::Unused, self.sync_count);
             self.transmit_pdo_messages(true, NodeEvent::Unused, self.sync_count);
         }
-        None
     }
 
     pub fn event_timer_callback(&mut self) {
@@ -326,8 +319,12 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         if self.heartbeats_timer > 0 {
             self.heartbeats += 1;
             if self.heartbeats % self.heartbeats_timer == 0 {
-                let frame = genf(0x700 + self.node_id as u16, &[self.state.heartbeat_code()]);
-                self.can_network.transmit(&frame).expect("Heartbeat error");
+                match create_frame(0x700 + self.node_id as u16, &[self.state.heartbeat_code()]) {
+                    Ok(frame) => { self.transmit(&frame) }
+                    Err(ec) => {
+                        error!("Errors in creating heartbeat CAN frame: error_code = {:?}", ec);
+                    }
+                }
             }
         }
 

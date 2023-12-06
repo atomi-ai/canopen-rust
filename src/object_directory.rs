@@ -4,9 +4,10 @@ use ini_core as ini;
 
 use crate::{info, util};
 use crate::data_type::DataType;
-use crate::error::CanAbortCode;
+use crate::error::{AbortCode, ErrorCode};
+use crate::error::ErrorCode::ProcesedSectionFailed;
 use crate::prelude::*;
-use crate::value::{ByteConvertible, get_value, Value};
+use crate::value::{ByteConvertible, get_formatted_value_from_properties, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccessType {
@@ -22,7 +23,7 @@ impl AccessType {
         }
     }
 
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn from_str(s: &str) -> Result<Self, ErrorCode> {
         match s {
             "rw" => Ok(AccessType::new(true, true)),
             "ro" => Ok(AccessType::new(true, false)),
@@ -112,12 +113,12 @@ impl Array {
         add_member_to_container(&mut self.name_to_index, &mut self.index_to_variable, var);
     }
 
-    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, CanAbortCode> {
+    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, AbortCode> {
         if self.index_to_variable.contains_key(&sub_index) {
             return self
                 .index_to_variable
                 .get_mut(&sub_index)
-                .ok_or(CanAbortCode::ObjectDoesNotExistInObjectDictionary);
+                .ok_or(AbortCode::ObjectDoesNotExistInObjectDictionary);
         }
 
         if 0 < sub_index && sub_index < 0xFF {
@@ -131,10 +132,10 @@ impl Array {
                 return self
                     .index_to_variable
                     .get_mut(&sub_index)
-                    .ok_or(CanAbortCode::ObjectDoesNotExistInObjectDictionary);
+                    .ok_or(AbortCode::ObjectDoesNotExistInObjectDictionary);
             }
         }
-        Err(CanAbortCode::ObjectDoesNotExistInObjectDictionary)
+        Err(AbortCode::ObjectDoesNotExistInObjectDictionary)
     }
 }
 
@@ -168,18 +169,18 @@ impl Record {
         add_member_to_container(&mut self.name_to_index, &mut self.index_to_variable, var);
     }
 
-    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, CanAbortCode> {
+    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, AbortCode> {
         self.index_to_variable
             .get_mut(&sub_index)
-            .ok_or(CanAbortCode::ObjectDoesNotExistInObjectDictionary)
+            .ok_or(AbortCode::ObjectDoesNotExistInObjectDictionary)
     }
 
-    pub fn get_variable_by_name(&self, name: &str) -> Result<&Variable, CanAbortCode> {
+    pub fn get_variable_by_name(&self, name: &str) -> Result<&Variable, AbortCode> {
         if let Some(idx) = self.name_to_index.get(name) {
             let t = self.index_to_variable.get(idx);
-            t.ok_or(CanAbortCode::GeneralError)
+            t.ok_or(AbortCode::GeneralError)
         } else {
-            Err(CanAbortCode::GeneralError)
+            Err(AbortCode::GeneralError)
         }
     }
 }
@@ -220,7 +221,7 @@ pub struct ObjectDirectory {
 }
 
 impl ObjectDirectory {
-    pub fn new(node_id: u8, eds_content: &str) -> Result<Self, String> {
+    pub fn new(node_id: u8, eds_content: &str) -> Result<Self, ErrorCode> {
         let mut od = ObjectDirectory {
             node_id,
             index_to_object: HashMap::new(),
@@ -266,27 +267,22 @@ impl ObjectDirectory {
         }
     }
 
-    pub fn set_value(
-        &mut self,
-        index: u16,
-        sub_index: u8,
-        data: &[u8],
-        ignore_access_check: bool,
-    ) -> Result<&Variable, CanAbortCode> {
+    pub fn set_value(&mut self, index: u16, sub_index: u8, data: &[u8], ignore_access_check: bool)
+        -> Result<&Variable, AbortCode> {
         match self.get_mut_variable(index, sub_index) {
             Err(code) => Err(code),
             Ok(var) => {
                 if !ignore_access_check && !var.access_type.is_writable() {
-                    return Err(CanAbortCode::AttemptToWriteReadOnlyObject);
+                    return Err(AbortCode::AttemptToWriteReadOnlyObject);
                 }
 
                 if var.data_type.size() != data.len() {
                     info!("set_value() error: expect data_type size = {}, input data len = {}, data: {:?}",
                         var.data_type.size(), data.len(), data);
                     if var.data_type.size() > data.len() {
-                        return Err(CanAbortCode::DataTypeMismatchLengthTooLow);
+                        return Err(AbortCode::DataTypeMismatchLengthTooLow);
                     } else {
-                        return Err(CanAbortCode::DataTypeMismatchLengthTooHigh);
+                        return Err(AbortCode::DataTypeMismatchLengthTooHigh);
                     }
                 }
 
@@ -306,11 +302,11 @@ impl ObjectDirectory {
         }
     }
 
-    pub fn get_variable(&mut self, index: u16, sub_index: u8) -> Result<&Variable, CanAbortCode> {
+    pub fn get_variable(&mut self, index: u16, sub_index: u8) -> Result<&Variable, AbortCode> {
         match self.get_mut_variable(index, sub_index) {
             Ok(var) => {
                 if !var.access_type.is_readable() {
-                    return Err(CanAbortCode::AttemptToReadWriteOnlyObject);
+                    return Err(AbortCode::AttemptToReadWriteOnlyObject);
                 }
                 // info!("xfguo: get var: {:?}", var);
                 Ok(var)
@@ -323,18 +319,18 @@ impl ObjectDirectory {
         &mut self,
         index: u16,
         sub_index: u8,
-    ) -> Result<&mut Variable, CanAbortCode> {
+    ) -> Result<&mut Variable, AbortCode> {
         match self.index_to_object.get_mut(&index) {
             Some(ObjectType::Variable(var)) => {
                 if sub_index == 0 {
                     Ok(var)
                 } else {
-                    Err(CanAbortCode::SubIndexDoesNotExist)
+                    Err(AbortCode::SubIndexDoesNotExist)
                 }
             }
             Some(ObjectType::Array(arr)) => arr.get_mut_variable(sub_index),
             Some(ObjectType::Record(rec)) => rec.get_mut_variable(sub_index),
-            None => Err(CanAbortCode::ObjectDoesNotExistInObjectDictionary),
+            None => Err(AbortCode::ObjectDoesNotExistInObjectDictionary),
         }
     }
 
@@ -353,13 +349,14 @@ impl ObjectDirectory {
         &mut self,
         section_name: &str,
         properties: &HashMap<String, String>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ErrorCode> {
         if util::is_top(section_name) {
-            let index = u16::from_str_radix(section_name, 16).map_err(|_| "Invalid index")?;
+            let index = u16::from_str_radix(section_name, 16).map_err(
+                |_| make_section_error(section_name, "Invalid index"))?;
             let name = properties.get("ParameterName").ok_or_else(
-                || format!("No 'ParameterName' in section <{}>", section_name))?;
+                || make_section_error(section_name, "No ParameterName"))?;
             let ot = util::parse_number(properties.get("ObjectType").ok_or_else(
-                || format!("No 'ObjectType' in section <{}>", section_name))?);
+                || make_section_error(section_name, "No ObjectType"))?);
             match ot {
                 7 => {
                     let variable =
@@ -419,16 +416,17 @@ impl ObjectDirectory {
             }
         } else if let Some((index, sub_index)) = util::is_sub(section_name) {
             let name = properties.get("ParameterName").ok_or_else(
-                || format!("No name in section <{}>", section_name))?;
+                || make_section_error(section_name, "No name"))?;
             let variable = build_variable(properties, self.node_id, name, index, Some(sub_index))?;
-            self.add_sub_member(index, variable)?;
+            self.add_sub_member(index, variable).map_err(|err| {
+                make_section_error(section_name, format!("add_sub_member error: {:?}", err).as_str())
+            })?;
         } else if let Some(index) = util::is_name(section_name) {
             // Logic related to CompactSubObj
             let t = properties.get("NrOfEntries").ok_or_else(
-                || format!("No NrOfEntries in section <{}>", section_name))?;
-            let num_of_entries = t.parse().or_else(
-                |err| Err(format!("Errors in parsing '{}' in section <{}>, err: {:?}",
-                                  t, section_name, err)))?;
+                || make_section_error(section_name, "No NrOfEntries"))?;
+            let num_of_entries = t.parse().or_else(|err| Err(make_section_error(
+                section_name, format!("parsing '{}' error: {:?}", t, err).as_str())))?;
             if let Some(ObjectType::Array(arr)) = self.index_to_object.get_mut(&index) {
                 if let Some(src_var) = arr.index_to_variable.get(&1u8) {
                     let cloned_src_var = src_var.clone();
@@ -451,7 +449,7 @@ impl ObjectDirectory {
         Ok(())
     }
 
-    pub fn load_from_content(&mut self, content: &str) -> Result<(), String> {
+    pub fn load_from_content(&mut self, content: &str) -> Result<(), ErrorCode> {
         let mut current_section_name: Option<String> = None;
         let mut current_properties: HashMap<String, String> = HashMap::new();
 
@@ -482,13 +480,20 @@ impl ObjectDirectory {
     }
 }
 
+fn make_section_error(section_name: &str, more_info: &str) -> ErrorCode {
+    ProcesedSectionFailed {
+        section_name: section_name.to_string(),
+        more_info: more_info.to_string()
+    }
+}
+
 fn build_variable(
     properties: &HashMap<String, String>,
     node_id: u8,
     name: &String,
     index: u16,
     sub_index: Option<u8>,
-) -> Result<Variable, String> {
+) -> Result<Variable, ErrorCode> {
     let storage_location = properties
         .get("StorageLocation")
         .unwrap_or(&String::from(""))
@@ -513,12 +518,13 @@ fn build_variable(
     );
     let dt = DataType::from_u32(dt_val);
 
-    let min = get_value(&properties, "LowLimit", node_id, &dt);
-    let max = get_value(&properties, "HighLimit", node_id, &dt);
+    let min = get_formatted_value_from_properties(&properties, "LowLimit", node_id, &dt);
+    let max = get_formatted_value_from_properties(&properties, "HighLimit", node_id, &dt);
 
-    let default_value = get_value(&properties, "DefaultValue", node_id, &dt).unwrap_or(
-        Value::new(dt.default_value()));
-    let parameter_value = get_value(&properties, "ParameterValue", node_id, &dt);
+    let default_value = get_formatted_value_from_properties(
+        &properties, "DefaultValue", node_id, &dt).unwrap_or(Value::new(dt.default_value()));
+    let parameter_value = get_formatted_value_from_properties(
+        &properties, "ParameterValue", node_id, &dt);
 
     let variable = Variable {
         name: name.clone(),

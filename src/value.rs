@@ -1,6 +1,7 @@
 use crate::data_type::DataType;
 use crate::prelude::*;
-use crate::util;
+use crate::{error, util};
+use crate::error::ErrorCode;
 
 #[derive(Clone, Debug)]
 pub struct Value {
@@ -47,9 +48,12 @@ macro_rules! impl_byte_convertible_for_int {
             }
 
             fn from_bytes(bytes: &[u8]) -> Self {
-                assert_eq!(bytes.len(), $len);
-                let array: [u8; $len] = bytes.try_into().expect("Wrong number of bytes");
-                <$t>::from_le_bytes(array)
+                if bytes.len() == $len {
+                    if let Ok(arr) = bytes.try_into() {
+                        return <$t>::from_le_bytes(arr);
+                    }
+                }
+                0 as $t
             }
         }
     };
@@ -68,7 +72,7 @@ impl_byte_convertible_for_int!(f64, 8);
 
 impl ByteConvertible for String {
     fn from_bytes(bytes: &[u8]) -> Self {
-        String::from_utf8(bytes.to_vec()).expect("Failed to convert bytes to String")
+        String::from_utf8(bytes.to_vec()).unwrap_or(String::new())
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -87,89 +91,76 @@ impl Value {
     }
 }
 
-fn string_to_value(data_type: &DataType, data_string: &str) -> Result<Value, String> {
+fn make_error(data_type: DataType, data_string: &str) -> ErrorCode {
+    ErrorCode::StringToValueFailed {
+        data_type,
+        str: data_string.to_string(),
+    }
+}
+
+fn string_to_value(data_type: &DataType, data_string: &str) -> Result<Value, ErrorCode> {
     match data_type {
-        DataType::Unknown => Err("Unknown DataType".into()),
+        DataType::Unknown => Err(make_error(data_type.clone(), data_string)),
 
         DataType::Boolean => {
             let val: u8 = match data_string.to_lowercase().as_str() {
                 "true" | "1" => 1,
                 "false" | "0" => 0,
-                _ => return Err("Invalid boolean value".into()),
+                _ => return Err(make_error(data_type.clone(), data_string)),
             };
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Integer8 => {
             let val: i8 = util::parse_number(data_string);
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Integer16 => {
             let val: i16 = util::parse_number(data_string);
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Integer32 => {
             let val: i32 = util::parse_number(data_string);
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Integer64 => {
             let val: i64 = util::parse_number(data_string);
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Unsigned8 => {
             let val: u8 = util::parse_number(data_string);
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Unsigned16 => {
             let val: u16 = util::parse_number(data_string);
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Unsigned32 => {
             let val: u32 = util::parse_number(data_string);
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Unsigned64 => {
             let val: u64 = util::parse_number(data_string);
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Real32 => {
-            let val: f32 = data_string.parse().map_err(|_| "Failed to parse f32")?;
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            let val: f32 = data_string.parse().map_err(
+                |_| make_error(data_type.clone(), data_string))?;
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Real64 => {
-            let val: f64 = data_string.parse().map_err(|_| "Failed to parse f64")?;
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+            let val: f64 = data_string.parse().map_err(
+                |_| make_error(data_type.clone(), data_string))?;
+            Ok(Value::new(val.to_bytes()))
         }
 
         DataType::VisibleString | DataType::OctetString | DataType::UnicodeString => Ok(Value {
@@ -179,35 +170,68 @@ fn string_to_value(data_type: &DataType, data_string: &str) -> Result<Value, Str
         DataType::Domain => {
             let val: i32 = data_string
                 .parse()
-                .map_err(|_| "Failed to parse domain as i32")?;
-            Ok(Value {
-                data: val.to_bytes(),
-            })
+                .map_err(|_| make_error(data_type.clone(), data_string))?;
+            Ok(Value::new(val.to_bytes()))
         }
     }
 }
 
-pub fn get_value(
+pub fn evaluate_expression_with_node_id(node_id: u8, expression: &str) -> String {
+    // Replace $NODEID with the actual node_id
+    let modified_expression = expression.replace("$NODEID", &node_id.to_string());
+
+    // Evaluate simple arithmetic expressions
+    modified_expression
+        .split('+')
+        .map(|s| s.trim())
+        .filter_map(|s| if s.starts_with("0x") || s.starts_with("0X") {
+            i64::from_str_radix(&s[2..], 16).ok()
+        } else {
+            s.parse::<i64>().ok()
+        })
+        .sum::<i64>()
+        .to_string()
+}
+
+pub fn get_formatted_value_from_properties(
     properties: &HashMap<String, String>,
     property_name: &str,
     node_id: u8,
     data_type: &DataType,
 ) -> Option<Value> {
-    let mut raw = properties
-        .get(&String::from(property_name))
-        .unwrap_or(&String::from(""))
-        .clone();
+    let raw = match properties.get(property_name) {
+        Some(value) if !value.is_empty() => value,
+        _ => return None,
+    };
 
-    if raw.is_empty() {
-        return None;
-    }
-    if raw.contains("$NODEID") {
-        // rewrite the string "123 + $NODEID" => "125" if this is node 2.
-        raw = util::to_value_with_node_id(node_id, &raw);
-    }
+    let modified_raw = if raw.contains("$NODEID") {
+        evaluate_expression_with_node_id(node_id, raw)
+    } else {
+        raw.clone()
+    };
 
-    match string_to_value(data_type, &raw) {
+    match string_to_value(data_type, &modified_raw) {
         Ok(val) => Some(val),
-        Err(_e) => None,
+        Err(e) => {
+            error!("Error converting string to value: {:?}", e);
+            None
+        },
+    }
+}
+
+#[cfg(test)]
+mod value_tests {
+    use super::evaluate_expression_with_node_id;
+
+    #[test]
+    fn test_to_value_with_node_id() {
+        assert_eq!(evaluate_expression_with_node_id(2, "$NODEID + 100"), "102");
+        assert_eq!(evaluate_expression_with_node_id(2, "100+$NODEID"), "102");
+        assert_eq!(evaluate_expression_with_node_id(2, "100"), "100");
+        assert_eq!(evaluate_expression_with_node_id(2, "$NODEID+100+200"), "302");
+        assert_eq!(evaluate_expression_with_node_id(2, "$NODEID + 100 + 200"), "302");
+        assert_eq!(evaluate_expression_with_node_id(34, "$NODEID + 100 + 200"), "334");
+        assert_eq!(evaluate_expression_with_node_id(2, "No arithmetic here"), "0");
+        assert_eq!(evaluate_expression_with_node_id(2, "$NODEID+0x600"), "1538");
     }
 }

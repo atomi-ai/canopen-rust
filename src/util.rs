@@ -1,12 +1,15 @@
-use crate::prelude::*;
-
+use core::cmp::min;
 use core::str::FromStr;
+
 use embedded_can::{Frame, Id, StandardId};
+
+use crate::error::{AbortCode, ErrorCode};
+use crate::prelude::*;
 
 pub trait ParseRadix: FromStr {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, Self::Err>
-    where
-        Self: Sized;
+        where
+            Self: Sized;
 }
 
 macro_rules! impl_parse_radix_signed {
@@ -59,27 +62,6 @@ pub fn result_to_option<T, Err>(res: Result<T, Err>) -> Option<T> {
     }
 }
 
-pub fn to_value_with_node_id(node_id: u8, expression: &str) -> String {
-    // Replace $NODEID with the actual node_id
-    let modified_expression = expression.replace("$NODEID", &node_id.to_string());
-
-    // Evaluate simple arithmetic expressions
-    let value_sum: i64 = modified_expression
-        .split('+')
-        .filter_map(|s| {
-            let s_trimmed = s.trim();
-            if s_trimmed.starts_with("0x") || s_trimmed.starts_with("0X") {
-                i64::from_str_radix(&s_trimmed[2..], 16).ok()
-            } else {
-                s_trimmed.parse::<i64>().ok()
-            }
-        })
-        .sum();
-
-    // Convert the evaluated sum to a string
-    value_sum.to_string()
-}
-
 pub fn get_cob_id<F: Frame>(frame: &F) -> Option<u16> {
     if let Id::Standard(sid) = frame.id() {
         return Some(sid.as_raw());
@@ -123,45 +105,38 @@ pub fn get_index_from_can_frame<F: Frame>(frame: &F) -> (u16, u8) {
 }
 
 pub fn flatten(slices: &[&[u8]]) -> Vec<u8> {
-    let mut res = Vec::new();
-    for slice in slices {
-        res.extend_from_slice(slice);
-    }
-    let l = res.len();
-    if l > 8 {
-        res.resize(8, 0);
-    } else {
-        for _ in l..8 {
-            res.push(0);
-        }
-    }
-    res
+    slices
+        .iter()
+        .flat_map(|&slice| slice.iter().cloned())
+        .take(8)
+        .chain(core::iter::repeat(0).take(8))
+        .take(8)
+        .collect()
 }
 
-pub fn u64_to_vec(mut data: u64, bytes: usize) -> Vec<u8> {
-    let mut res = vec![0u8; bytes];
-    for i in 0..bytes {
-        res[bytes - 1 - i] = (data & 0xFF) as u8;
-        data = data >> 8;
-    }
-    res
+pub fn u64_to_vec(data: u64, bytes: usize) -> Vec<u8> {
+    data.to_be_bytes()[8 - min(bytes, 8)..].to_vec()
 }
 
-pub fn genf_and_padding<F: Frame + Debug>(cob_id: u16, bytes: &[u8]) -> F {
-    // Ensure bytes doesn't exceed 8 in length
-    let cutoff = if bytes.len() > 8 { 8 } else { bytes.len() };
-    let mut packet = bytes[0..cutoff].to_vec();
+pub fn create_frame_with_padding<F: Frame + Debug>(cob_id: u16, data: &[u8])
+    -> Result<F, ErrorCode> {
+    let mut packet = Vec::from(&data[..data.len().min(8)]);
+    packet.resize(8, 0);
 
-    // Padding to 8 bytes with 0
-    while packet.len() < 8 {
-        packet.push(0);
-    }
-
-    F::new(StandardId::new(cob_id).unwrap(), packet.as_slice()).unwrap()
+    F::new(StandardId::new(cob_id).ok_or(ErrorCode::InvalidStandardId {cob_id})?,
+           &packet).ok_or(ErrorCode::FrameCreationFailed {data: data.to_vec()})
 }
 
-pub fn genf<F: Frame + Debug>(cob_id: u16, bytes: &[u8]) -> F {
-    F::new(StandardId::new(cob_id).unwrap(), bytes).unwrap()
+pub fn create_frame<F: Frame + Debug>(cob_id: u16, data: &[u8]) -> Result<F, ErrorCode> {
+    F::new(StandardId::new(cob_id).ok_or(ErrorCode::InvalidStandardId {cob_id})?, data)
+        .ok_or(ErrorCode::FrameCreationFailed{data: data.to_vec()})
+}
+
+pub fn convert_bytes_to_u32(data: &[u8]) -> Result<u32, AbortCode> {
+    match data.try_into() {
+        Ok(arr) => Ok(u32::from_le_bytes(arr)),
+        Err(_) => Err(AbortCode::GeneralError),
+    }
 }
 
 static CCITT_HASH: [u16; 256] = [
@@ -200,21 +175,120 @@ pub fn crc16_canopen_with_lut(bytes: &[u8]) -> u16 {
     crc
 }
 
+pub fn make_abort_error(abort_code: AbortCode, more_info: &str) -> ErrorCode {
+    ErrorCode::AbortCodeWrapper {
+        abort_code,
+        more_info: more_info.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod util_tests {
-    use super::to_value_with_node_id;
-    use crate::util::parse_number;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use core::fmt::{Debug, Formatter};
+    use embedded_can::{Frame, Id};
+    use crate::util::{create_frame, parse_number, ErrorCode};
+    use super::u64_to_vec;
+
+    struct MockFrame {
+        data: Vec<u8>,
+    }
+
+    impl Frame for MockFrame {
+        fn new(_id: impl Into<Id>, data: &[u8]) -> Option<Self> {
+            if data.len() > 4 {
+                None
+            } else {
+                Some(MockFrame { data: data.to_vec() })
+            }
+        }
+
+        fn new_remote(_id: impl Into<Id>, _dlc: usize) -> Option<Self> {
+            todo!()
+        }
+
+        fn is_extended(&self) -> bool {
+            todo!()
+        }
+
+        fn is_remote_frame(&self) -> bool {
+            todo!()
+        }
+
+        fn id(&self) -> Id {
+            todo!()
+        }
+
+        fn dlc(&self) -> usize {
+            todo!()
+        }
+
+        fn data(&self) -> &[u8] {
+            todo!()
+        }
+    }
+
+    impl Debug for MockFrame {
+        fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+            write!(f, "mock_frame: {:x?}", self.data)
+        }
+    }
 
     #[test]
-    fn test_to_value_with_node_id() {
-        assert_eq!(to_value_with_node_id(2, "$NODEID + 100"), "102");
-        assert_eq!(to_value_with_node_id(2, "100+$NODEID"), "102");
-        assert_eq!(to_value_with_node_id(2, "100"), "100");
-        assert_eq!(to_value_with_node_id(2, "$NODEID+100+200"), "302");
-        assert_eq!(to_value_with_node_id(2, "$NODEID + 100 + 200"), "302");
-        assert_eq!(to_value_with_node_id(1234, "$NODEID + 100 + 200"), "1534");
-        assert_eq!(to_value_with_node_id(2, "No arithmetic here"), "0");
-        assert_eq!(to_value_with_node_id(2, "$NODEID+0x600"), "1538");
+    fn test_create_frame_success() {
+        let cob_id = 0x123; // 有效的 StandardId
+        let data = &[0x01, 0x02, 0x03];
+        let result = create_frame::<MockFrame>(cob_id, data);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_frame_invalid_standard_id() {
+        let cob_id = 0x1FFF; // 无效的 StandardId
+        let data = &[0x01, 0x02, 0x03];
+        let result = create_frame::<MockFrame>(cob_id, data);
+        assert!(matches!(result, Err(ErrorCode::InvalidStandardId { cob_id: _ })));
+    }
+
+    #[test]
+    fn test_create_frame_frame_creation_failed() {
+        let cob_id = 0x123; // 有效的 StandardId
+        let data = &[0x01, 0x02, 0x03, 0x04, 0x05]; // 故意使数据长度超过限制以触发失败
+        let result = create_frame::<MockFrame>(cob_id, data);
+        match result {
+            Err(ErrorCode::FrameCreationFailed { data: returned_data }) => {
+                assert_eq!(returned_data, data);
+            },
+            _ => panic!("Expected ErrorCode::FrameCreationFailed, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_basic() {
+        assert_eq!(u64_to_vec(0x123456789ABCDEF0, 8),
+                   vec![0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]);
+        assert_eq!(u64_to_vec(0x01, 2), vec![0x0, 0x1]);
+        assert_eq!(u64_to_vec(0x8002, 2), vec![0x80, 0x02]);
+    }
+
+    #[test]
+    fn test_byte_length_exceeds_limit() {
+        assert_eq!(u64_to_vec(0x01, 9), vec![0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(u64_to_vec(0x123456789ABCDEF0, 10), vec![0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]);
+    }
+
+    #[test]
+    fn test_boundary_conditions() {
+        assert_eq!(u64_to_vec(0x123456789ABCDEF0, 0), vec![]);
+        assert_eq!(u64_to_vec(0x123456789ABCDEF0, 3), vec![0xBC, 0xDE, 0xF0]);
+        assert_eq!(u64_to_vec(0x123456789ABCDEF0, 8), vec![0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]);
+    }
+
+    #[test]
+    fn test_special_values() {
+        assert_eq!(u64_to_vec(0, 8), vec![0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(u64_to_vec(u64::MAX, 8), vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
     }
 
     #[test]

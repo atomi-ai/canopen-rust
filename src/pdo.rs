@@ -2,14 +2,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use embedded_can::{Frame, StandardId};
+use embedded_can::Frame;
 use embedded_can::nb::Can;
 use hashbrown::HashMap;
 
-use crate::error::CanAbortCode;
-use crate::info;
+use crate::error::AbortCode;
+use crate::{error, info};
 use crate::node::{Node, NodeEvent};
 use crate::object_directory::Variable;
+use crate::util::create_frame;
 
 pub(crate) const MAX_PDO_MAPPING_LENGTH: u8 = 64;
 
@@ -162,7 +163,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     // TODO(zephyr): Change type to Sync / Event.
     pub(crate) fn transmit_pdo_messages(&mut self, is_sync: bool, event: NodeEvent, count: u32) {
         // info!("xfguo: transmit_pdo_messages 0");
-        for i in 5..8 {
+        for i in 4..8 {
             let pdo = &self.pdo_objects.pdos[i];
 
             if !pdo.is_pdo_valid {
@@ -170,7 +171,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             }
 
             // Skip if don't need to transmit a PDO msg.
-            // info!("xfguo: transmit_pdo_messages 1.1, count = {}, pdo[{}] = {:#x?}", count, i, pdo);
+            // info!("xfguo: transmit_pdo_messages 1.1, count = {}, pdo[{}] = {:x?}", count, i, pdo);
             let tt = pdo.transmission_type as u32;
             if !should_trigger_pdo(is_sync, event, tt, pdo.event_timer as u32, count) {
                 continue;
@@ -181,14 +182,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             match self.gen_pdo_frame(pdo.cob_id as u16, pdo.num_of_map_objs,
                                      (&pdo.mappings[0..pdo.num_of_map_objs as usize]).to_vec()) {
                 Ok(f) => {
-                    match self.can_network.transmit(&f) {
-                        Err(err) => {
-                            info!("Failed to transmit TPDO frame {:?}, err: {:?}", f, err);
-                        }
-                        _ => {
-                            info!("Sent tpdo packet: {:?}", f);
-                        }
-                    }
+                    info!("Start to send TPDO frame {:?}", f);
+                    self.transmit(&f);
                 }
                 Err(err) => {
                     info!("Errors in generating PDO frame. err: {:?}", err);
@@ -201,7 +196,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         for i in 0..4 {
             let pdo = &self.pdo_objects.pdos[i];
 
-            // if count % 10 == 3 { info!("save_rpdo_messages() 1.1, count = {}, pdo = {:?} ", count, pdo); }
+            // if count % 10 == 3 { info!("save_rpdo_messages() 1.1, count = {}, pdo = {:x?} ", count, pdo); }
 
             if !pdo.is_pdo_valid {
                 continue;
@@ -248,7 +243,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     }
 
     pub(crate) fn gen_pdo_frame(&mut self, cob_id: u16, num_of_map_objs: u8, mappings: Vec<(u16, u8, u8)>)
-                                -> Result<CAN::Frame, CanAbortCode> {
+                                -> Result<CAN::Frame, AbortCode> {
         // TODO(zephyr): Reorg code below, use pdo.cached_data.
         let mut t = Vec::new();
         // info!("xfguo: gen_pdo_frame() 0, {}, {:#x?}", num_of_map_objs, mappings);
@@ -260,14 +255,17 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                     // info!("xfguo: gen_pdo_frame() 2.2.1, {:#x?}:{:#x?} => {:#x?}, t = {:#x?}",
                     //     idx, sub_idx, v, t);
                 }
-                Err(_) => return Err(CanAbortCode::GeneralError),
+                Err(_) => return Err(AbortCode::GeneralError),
             }
         }
         let packet = pack_data(&t);
-        Ok(CAN::Frame::new(StandardId::new(cob_id).unwrap(), packet.as_slice()).unwrap())
+        create_frame(cob_id, &packet).map_err(|ec| {
+            error!("Errors in creating frame, err: {:?}", ec);
+            AbortCode::GeneralError
+        })
     }
 
-    pub fn update(&mut self, var: &Variable) -> Result<(), CanAbortCode> {
+    pub fn update(&mut self, var: &Variable) -> Result<(), AbortCode> {
         let (t, x) = (var.index() >> 8, (var.index() & 0xF) as usize);
         if t < 0x14 || t >= 0x1C {
             return Ok(());
@@ -284,7 +282,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 for si in (1..=pdo.num_of_map_objs as usize).rev() {
                     match self.object_directory.get_variable(var.index(), si as u8) {
                         Ok(_) => {}
-                        Err(_) => { return Err(CanAbortCode::ObjectCannotBeMappedToPDO); }
+                        Err(_) => { return Err(AbortCode::ObjectCannotBeMappedToPDO); }
                     }
                 }
 
@@ -294,7 +292,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                     total += l;
                 }
                 if total > MAX_PDO_MAPPING_LENGTH {
-                    return Err(CanAbortCode::ExceedPDOSize);
+                    return Err(AbortCode::ExceedPDOSize);
                 }
                 pdo.total_length = total;
             }

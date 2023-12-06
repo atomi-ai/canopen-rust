@@ -1,10 +1,11 @@
-use alloc::vec;
+use alloc::{format, vec};
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use embedded_can::Frame;
 use embedded_can::nb::Can;
+use crate::error::{AbortCode, ErrorCode};
 use crate::node::Node;
-use crate::util::genf_and_padding;
+use crate::util::{create_frame_with_padding, make_abort_error};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum EmergencyErrorCode {
@@ -26,6 +27,7 @@ impl EmergencyErrorCode {
     }
 }
 
+#[derive(Clone, Debug)]
 pub enum ErrorRegister {
     GenericError,
     Current,
@@ -67,24 +69,35 @@ impl ErrorRegister {
 }
 
 impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
-    pub fn trigger_emergency(&mut self, eec: EmergencyErrorCode, er: ErrorRegister, data: &[u8]) {
+    pub fn trigger_emergency(&mut self, eec: EmergencyErrorCode, er: ErrorRegister, data: &[u8])
+        -> Result<(), ErrorCode> {
         let eec_arr = eec.code().to_le_bytes();
         let (eecl, eech) = (eec_arr[0], eec_arr[1]);
         let erc = er.code();
         let mut v: Vec<u8> = vec![eecl, eech, erc];
         v.extend_from_slice(data);
-        let frame = genf_and_padding(0x080 | self.node_id as u16, v.as_slice());
-        self.can_network.transmit(&frame).expect("Errors in transmit packet");
+        let frame = create_frame_with_padding(0x080 | self.node_id as u16, v.as_slice())?;
+        self.transmit(&frame);
 
         let tmp_count = self.error_count + 1;
-        self.object_directory.set_value(0x1003, 0x0, &[tmp_count], true).expect("TODO: panic message");
-        self.object_directory.set_value(0x1003, tmp_count, &[eecl, eech, 0, 0], true).expect("TODO");
-        self.object_directory.set_value(0x1001, 0x0, &[erc], true).expect("TODO");
+        let res = (|| -> Result<(), AbortCode> {
+            self.object_directory.set_value(0x1003, 0x0, &[tmp_count], true)?;
+            self.object_directory.set_value(0x1003, tmp_count, &[eecl, eech, 0, 0], true)?;
+            self.object_directory.set_value(0x1001, 0x0, &[erc], true)?;
+            Ok(())
+        })();
+        res.map_err(|abort_code| {
+            make_abort_error(abort_code, format!(
+                "Errors in setting emergency registers, tmp_count = {:?}, eec = {:?}, er = {:?}",
+                tmp_count, eec, er).as_str())
+        })?;
         self.error_count = tmp_count;
 
         let mut reset_v: Vec<u8> = vec![0, 0, 0];
         reset_v.extend_from_slice(data);
-        let reset_frame = genf_and_padding(0x080 | self.node_id as u16, reset_v.as_slice());
-        self.can_network.transmit(&reset_frame).expect("Errors in transmit reset packet");
+        let reset_frame = create_frame_with_padding(0x080 | self.node_id as u16, reset_v.as_slice())?;
+        self.transmit(&reset_frame);
+
+        Ok(())
     }
 }

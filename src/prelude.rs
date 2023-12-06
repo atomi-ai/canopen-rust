@@ -1,7 +1,6 @@
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod std_items {
     extern crate alloc;
-    pub use std::boxed::Box;
     pub use std::collections::HashMap;
     pub use std::fmt::Debug;
     pub use std::*;
@@ -18,7 +17,6 @@ pub use std_items::*;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod no_std_items {
     extern crate alloc;
-    pub use alloc::boxed::Box;
     pub use alloc::fmt::Debug;
     pub use alloc::format;
     pub use alloc::string::{String, ToString};

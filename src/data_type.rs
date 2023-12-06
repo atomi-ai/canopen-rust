@@ -1,3 +1,5 @@
+use core::cmp::Ordering;
+use core::hash::{Hash, Hasher};
 use crate::prelude::*;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -18,6 +20,24 @@ pub enum DataType {
     Real64 = 0x11,
     Integer64 = 0x15,
     Unsigned64 = 0x1B,
+}
+
+impl Ord for DataType {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (*self as u16).cmp(&(*other as u16))
+    }
+}
+
+impl PartialOrd for DataType {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Hash for DataType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (*self as u16).hash(state);
+    }
 }
 
 impl DataType {
