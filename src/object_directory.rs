@@ -216,8 +216,8 @@ pub fn obj_to_record(obj: &ObjectType) -> Option<&Record> {
 #[derive(Clone, Debug)]
 pub struct ObjectDirectory {
     node_id: u8,
-    index_to_object: HashMap<u16, ObjectType>,
-    name_to_index: HashMap<String, u16>,
+    pub(crate) index_to_object: HashMap<u16, ObjectType>,
+    pub(crate) name_to_index: HashMap<String, u16>,
 }
 
 impl ObjectDirectory {

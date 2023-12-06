@@ -8,7 +8,8 @@ use crate::cmd_header::{
     SdoEndBlockDownloadCmd, SdoInitBlockUploadCmd,
 };
 use crate::error::AbortCode;
-use crate::{error, info};
+use crate::error;
+use crate::constant::{RESET_MAGIC_CODE, RESET_REGISTER_ID};
 use crate::node::Node;
 use crate::prelude::*;
 use crate::sdo_server::SdoState::{
@@ -100,7 +101,6 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
         match res {
             Ok(resp) => {
-                info!("To send SDO response frame: {:x?}", resp);
                 self.transmit(&resp);
             },
             Err(code) => {
@@ -271,22 +271,65 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         self.next_state(DownloadSdoBlock, response)
     }
 
-    fn set_value_with_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), AbortCode> {
-        if (0x1600..=0x17FF).contains(&index) || (0x1A00..=0x1BFF).contains(&index) {
-            if sub_index > 0 && sub_index <= crate::pdo::MAX_PDO_MAPPING_LENGTH {
-                if data.len() != 4 {
-                    info!("set_value_with_check() 1.1, index = {:#?}, sub_index = {}, data = {:?}", index, sub_index, data);
-                    return Err(AbortCode::ObjectCannotBeMappedToPDO);
-                }
-                let di = (data[3] as u16) << 8 | (data[2] as u16);
-                let d_si = data[1];
-                let var = self.object_directory.get_variable(di, d_si)?;
-                if !var.pdo_mappable() || (index < 0x1800 && !var.access_type().is_writable()) {
-                    return Err(AbortCode::ObjectCannotBeMappedToPDO);
-                }
-            }
+    fn validate_pdo_mapping_params_on_setting(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), AbortCode> {
+        // Early return if sub_index is not within valid PDO mapping range.
+        if !(sub_index > 0 && sub_index <= crate::pdo::MAX_PDO_MAPPING_LENGTH) {
+            return Ok(());
         }
 
+        // Check data length is as expected for PDO mapping.
+        if data.len() != 4 {
+            return Err(AbortCode::ObjectCannotBeMappedToPDO);
+        }
+
+        // Extract destination index and sub-index from data.
+        let dest_index = (data[3] as u16) << 8 | (data[2] as u16);
+        let dest_sub_index = data[1];
+
+        // Retrieve variable and validate if it can be mapped to PDO.
+        let var = self.object_directory.get_variable(dest_index, dest_sub_index)?;
+        if !var.pdo_mappable() || (index < 0x1800 && !var.access_type().is_writable()) {
+            return Err(AbortCode::ObjectCannotBeMappedToPDO);
+        }
+
+        Ok(())
+    }
+
+    fn try_reset(&mut self, sub_index: u8, data: &[u8]) -> Result<bool, AbortCode> {
+        let magic_code = u32::from_le_bytes(data[0..4].try_into().map_err(|_| {
+            error!("Errors in converting data: {:x?}", data);
+            AbortCode::GeneralError
+        })?);
+        if magic_code != RESET_MAGIC_CODE {
+            return Err(AbortCode::DataTransferOrStoreFailed)
+        }
+        let success = match sub_index {
+            0x1 => self.reset(),
+            0x2 => self.reset_communication(),
+            0x3 => self.reset_application(),
+            _ => {false}
+        };
+
+        if success {
+            self.object_directory.set_value(RESET_REGISTER_ID, sub_index, &1u32.to_le_bytes(), true)?;
+        }
+
+        Ok(true)
+    }
+
+    fn set_value_preprocess(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<bool, AbortCode> {
+        match index {
+            0x1600..=0x17FF | 0x1A00..=0x1BFF =>
+                self.validate_pdo_mapping_params_on_setting(index, sub_index, data).map(|_| false),
+            RESET_REGISTER_ID => self.try_reset(sub_index, data),
+            _ => Ok(false),
+        }
+    }
+
+    fn set_value_with_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), AbortCode> {
+        if self.set_value_preprocess(index, sub_index, data)? {
+            return Ok(())
+        }
         let var = self.object_directory.set_value(index, sub_index, data, false)?;
         match index {
             0x1400..=0x1BFF => {

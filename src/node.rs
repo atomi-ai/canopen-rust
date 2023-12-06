@@ -1,3 +1,4 @@
+use core::ops::RangeInclusive;
 use embedded_can::{nb::Can, Frame};
 use crate::emergency::{EmergencyErrorCode, ErrorRegister};
 
@@ -56,6 +57,7 @@ pub struct Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
     pub(crate) node_id: u8,
     pub(crate) can_network: CAN,
     pub(crate) object_directory: ObjectDirectory,
+    backup_od: ObjectDirectory,
     pub(crate) pdo_objects: PdoObjects,
 
     // SDO specific data below:
@@ -88,11 +90,13 @@ impl<CAN> Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
         can_network: CAN,
     ) -> Result<Self, ErrorCode> {
         let object_directory = ObjectDirectory::new(node_id, eds_content)?;
+        let backup_od = object_directory.clone();
         let pdo_objects = PdoObjects::new();
         let mut node = Node {
             node_id,
             can_network,
             object_directory,
+            backup_od,
             pdo_objects,
             sdo_state: Normal,
             read_buf: None,
@@ -181,16 +185,48 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         true
     }
 
-    fn reset_communication(&mut self) {
-        todo!();
-    }
-    fn reset_application(&mut self) { todo!();}
-    fn reset(&mut self) {
-        self.reset_communication();
-        self.reset_application();
+    fn reset_object_directory_range(&mut self, range: RangeInclusive<u16>, full_range: bool) -> bool {
+        let indexes_to_reset: Vec<u16> = if full_range {
+            self.object_directory.index_to_object.keys().cloned().collect()
+        } else {
+            self.object_directory.index_to_object
+                .keys()
+                .cloned()
+                .filter(|&index| range.contains(&index))
+                .collect()
+        };
 
-        // THINK(zephyr): Do we need to support other params, like manufacturer
-        // specific?
+        // Replace the objects at these indexes
+        for index in indexes_to_reset {
+            // Remove the object from the current ObjectDirectory
+            self.object_directory.index_to_object.remove(&index);
+
+            // If the backup contains the corresponding object, replace it
+            if let Some(backup_object) = self.backup_od.index_to_object.get(&index) {
+                self.object_directory.index_to_object.insert(index, backup_object.clone());
+            }
+        }
+
+        // Clean up the name_to_index mapping
+        self.object_directory.name_to_index.retain(|_name, &mut index| {
+            self.object_directory.index_to_object.contains_key(&index)
+        });
+        true
+    }
+
+    /// Rebuilds communication specific fields for the object directory.
+    pub(crate) fn reset_communication(&mut self) -> bool {
+        self.reset_object_directory_range(0x1000..=0x1FFF, false)
+    }
+
+    /// Rebuilds application specific fields for the object directory.
+    pub(crate) fn reset_application(&mut self) -> bool {
+        self.reset_object_directory_range(0x6000..=0x9FFF, false)
+    }
+
+    /// Rebuilds the whole object directory
+    pub(crate) fn reset(&mut self) -> bool {
+        self.reset_object_directory_range(0x1000..=0x9FFF, true)
     }
 
     fn process_nmt_frame(&mut self, frame: &CAN::Frame) {
