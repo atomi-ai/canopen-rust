@@ -1,3 +1,9 @@
+// TODO(zephyr): Split the logic to read EDS and object_directory. Tasks:
+//   - Make Array fixed, and provide real get_variable() / get_mut_variable().
+//   - Serialize the OD as binary, provide tools to read it
+//   - Read the serialized binary as input instead of EDS / DCF
+//   - The conversion of EDS <=> binary should happen outside of the main server.
+
 use alloc::borrow::ToOwned;
 use alloc::string::ToString;
 use core::str::FromStr;
@@ -12,6 +18,11 @@ use crate::error::ErrorCode::ProcesedSectionFailed;
 use crate::prelude::*;
 use crate::util::make_abort_error;
 use crate::value::{ByteConvertible, get_formatted_value_from_properties, Value};
+
+/// Object Types
+const OBJECT_TYPE_VARIABLE: u32 = 7;
+const OBJECT_TYPE_ARRAY: u32 = 8;
+const OBJECT_TYPE_RECORD: u32 = 9;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccessType {
@@ -294,17 +305,7 @@ impl ObjectDirectory {
                     }
                 }
 
-                // // check data type
-                // info!(
-                //     "xfguo: before set value, index: {} current value: {:?}",
-                //     index,
-                //     var
-                // );
                 var.default_value.set_data(data.to_vec());
-                // info!(
-                //     "xfguo: after set: get current value: {:?}",
-                //     self.index_to_object.get(&index)
-                // );
                 Ok(var)
             }
         }
@@ -316,7 +317,6 @@ impl ObjectDirectory {
                 if !var.access_type.is_readable() {
                     return Err(make_abort_error(AttemptToReadWriteOnlyObject, "".to_string()));
                 }
-                // info!("xfguo: get var: {:?}", var);
                 Ok(var)
             }
             Err(code) => Err(code),
@@ -363,17 +363,17 @@ impl ObjectDirectory {
                 |_| make_section_error(section_name, "Invalid index"))?;
             let name = properties.get("ParameterName").ok_or_else(
                 || make_section_error(section_name, "No ParameterName"))?;
-            let ot = util::parse_number(properties.get("ObjectType").ok_or_else(
+            let ot: u32 = util::parse_number(properties.get("ObjectType").ok_or_else(
                 || make_section_error(section_name, "No ObjectType"))?);
             match ot {
-                7 => {
+                OBJECT_TYPE_VARIABLE => {
                     let variable =
                         build_variable(properties, self.node_id, name, index, None)?;
                     self.name_to_index.insert(variable.name.clone(), index);
                     self.index_to_object
                         .insert(index, ObjectType::Variable(variable));
                 }
-                8 => {
+                OBJECT_TYPE_ARRAY => {
                     let mut array = Array {
                         name: name.to_string(),
                         index,
@@ -404,7 +404,7 @@ impl ObjectDirectory {
                     }
                     self.add_member(index, name.clone(), ObjectType::Array(array));
                 }
-                9 => {
+                OBJECT_TYPE_RECORD => {
                     let record = Record {
                         name: name.clone(),
                         index,
@@ -475,11 +475,11 @@ impl ObjectDirectory {
                     let value = String::from(maybe_value.unwrap_or_default());
                     current_properties.insert(String::from(key), value);
                 }
-                _ => {} // 对于其他条目，例如 comments 或 section end，我们不做处理。
+                _ => {}  // Ignore for other sections, for example comments / section end.
             }
         }
 
-        // 处理最后一个 section
+        // The last section
         if let Some(section_name) = current_section_name {
             self.process_section(&section_name, &current_properties)?
         }

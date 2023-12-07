@@ -41,7 +41,7 @@ impl Hash for DataType {
 }
 
 impl DataType {
-    pub fn from_u32(value: u32) -> Self {
+    pub(crate) fn from_u32(value: u32) -> Self {
         match value {
             0x0 => DataType::Unknown,
             0x1 => DataType::Boolean,
@@ -65,7 +65,7 @@ impl DataType {
 
     // Return size of a type.
     // Size 0 means it is variant.
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         match self {
             DataType::Unknown => 0,       // Size 0 for unknown data type
             DataType::Boolean => 1,       // 1 byte
@@ -86,7 +86,7 @@ impl DataType {
         }
     }
 
-    pub fn default_value(&self) -> Vec<u8> {
+    pub(crate) fn default_value(&self) -> Vec<u8> {
         match *self {
             DataType::Unknown | DataType::Boolean => vec![0x0],
             DataType::Integer8 | DataType::Unsigned8 => vec![0x0],
@@ -95,10 +95,105 @@ impl DataType {
                 vec![0x0, 0x0, 0x0, 0x0]
             }
             DataType::VisibleString | DataType::OctetString | DataType::UnicodeString => vec![],
-            DataType::Domain => vec![], // TODO(zephyr): understand and implement domain type.
+            DataType::Domain => vec![0x0],
             DataType::Real64 | DataType::Integer64 | DataType::Unsigned64 => {
                 vec![0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0]
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    #[test]
+    fn test_from_u32() {
+        assert_eq!(DataType::from_u32(0x0), DataType::Unknown);
+        assert_eq!(DataType::from_u32(0x1), DataType::Boolean);
+        assert_eq!(DataType::from_u32(0x2), DataType::Integer8);
+        assert_eq!(DataType::from_u32(0x3), DataType::Integer16);
+        assert_eq!(DataType::from_u32(0x4), DataType::Integer32);
+        assert_eq!(DataType::from_u32(0x5), DataType::Unsigned8);
+        assert_eq!(DataType::from_u32(0x6), DataType::Unsigned16);
+        assert_eq!(DataType::from_u32(0x7), DataType::Unsigned32);
+        assert_eq!(DataType::from_u32(0x8), DataType::Real32);
+        assert_eq!(DataType::from_u32(0x9), DataType::VisibleString);
+        assert_eq!(DataType::from_u32(0xA), DataType::OctetString);
+        assert_eq!(DataType::from_u32(0xB), DataType::UnicodeString);
+        assert_eq!(DataType::from_u32(0xF), DataType::Domain);
+        assert_eq!(DataType::from_u32(0x11), DataType::Real64);
+        assert_eq!(DataType::from_u32(0x15), DataType::Integer64);
+        assert_eq!(DataType::from_u32(0x1B), DataType::Unsigned64);
+        assert_eq!(DataType::from_u32(0xFF), DataType::Unknown);
+    }
+
+    #[test]
+    fn test_size() {
+        assert_eq!(DataType::Unknown.size(), 0);
+        assert_eq!(DataType::Boolean.size(), 1);
+        assert_eq!(DataType::Integer8.size(), 1);
+        assert_eq!(DataType::Integer16.size(), 2);
+        assert_eq!(DataType::Integer32.size(), 4);
+        assert_eq!(DataType::Unsigned8.size(), 1);
+        assert_eq!(DataType::Unsigned16.size(), 2);
+        assert_eq!(DataType::Unsigned32.size(), 4);
+        assert_eq!(DataType::Real32.size(), 4);
+        assert_eq!(DataType::VisibleString.size(), 0);
+        assert_eq!(DataType::OctetString.size(), 0);
+        assert_eq!(DataType::UnicodeString.size(), 0);
+        assert_eq!(DataType::Domain.size(), 4);
+        assert_eq!(DataType::Real64.size(), 8);
+        assert_eq!(DataType::Integer64.size(), 8);
+        assert_eq!(DataType::Unsigned64.size(), 8);
+    }
+
+    #[test]
+    fn test_default_value() {
+        assert_eq!(DataType::Unknown.default_value(), vec![0x0]);
+        assert_eq!(DataType::Boolean.default_value(), vec![0x0]);
+        assert_eq!(DataType::Integer8.default_value(), vec![0x0]);
+        assert_eq!(DataType::Integer16.default_value(), vec![0x0, 0x0]);
+        assert_eq!(DataType::Integer32.default_value(), vec![0x0, 0x0, 0x0, 0x0]);
+        assert_eq!(DataType::Unsigned8.default_value(), vec![0x0]);
+        assert_eq!(DataType::Unsigned16.default_value(), vec![0x0, 0x0]);
+        assert_eq!(DataType::Unsigned32.default_value(), vec![0x0, 0x0, 0x0, 0x0]);
+        assert_eq!(DataType::Real32.default_value(), vec![0x0, 0x0, 0x0, 0x0]);
+        assert_eq!(DataType::VisibleString.default_value(), vec![]);
+        assert_eq!(DataType::OctetString.default_value(), vec![]);
+        assert_eq!(DataType::UnicodeString.default_value(), vec![]);
+        assert_eq!(DataType::Domain.default_value(), vec![0x0]);
+        assert_eq!(DataType::Real64.default_value(), vec![0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0]);
+        assert_eq!(DataType::Integer64.default_value(), vec![0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0]);
+        assert_eq!(DataType::Unsigned64.default_value(), vec![0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0]);
+    }
+
+    #[test]
+    fn test_data_type_ordering() {
+        let type1 = DataType::Boolean;
+        let type2 = DataType::Integer32;
+
+        assert!(type1 < type2);
+        assert!(type2 > type1);
+
+        assert!(type1.partial_cmp(&type2) == Some(Ordering::Less));
+        assert!(type2.partial_cmp(&type1) == Some(Ordering::Greater));
+    }
+
+    #[test]
+    fn test_data_type_hash() {
+        let data_type = DataType::Integer8;
+        let mut hasher = DefaultHasher::new();
+        data_type.hash(&mut hasher);
+        let hashed = hasher.finish();
+        assert_ne!(hashed, 0);
+
+        let data_type2 = DataType::Integer16;
+        let mut hasher2 = DefaultHasher::new();
+        data_type2.hash(&mut hasher2);
+        let hashed2 = hasher2.finish();
+        assert_ne!(hashed, hashed2);
     }
 }

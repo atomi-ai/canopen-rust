@@ -45,9 +45,6 @@ impl PdoObject {
     pub fn total_length(&self) -> u8 {
         self.total_length
     }
-    pub fn cached_data(&self) -> &Vec<u8> {
-        &self.cached_data
-    }
     pub fn largest_sub_index(&self) -> u8 {
         self.largest_sub_index
     }
@@ -71,28 +68,25 @@ impl PdoObject {
 }
 
 impl PdoObject {
-    pub fn update_comm_params(&mut self, var: &Variable) -> Option<u16> {
-        if var.sub_index() == 1 {
-            let t: u32 = var.default_value().to();
-            self.is_pdo_valid = (t >> 31 & 0x1) == 0;
-            self._not_used_rtr_allowed = (t >> 30 & 0x1) == 1;
-            self._not_used_is_29bit_can_id = (t >> 29 & 0x1) == 1;
-            self.cob_id = (t & 0xFFFF) as u16;
-        }
+    fn update_comm_params(&mut self, var: &Variable) -> Option<u16> {
         match var.sub_index() {
             0 => self.largest_sub_index = var.default_value().to(),
+            1 => {
+                let t: u32 = var.default_value().to();
+                self.is_pdo_valid = (t >> 31 & 0x1) == 0;
+                self._not_used_rtr_allowed = (t >> 30 & 0x1) == 1;
+                self._not_used_is_29bit_can_id = (t >> 29 & 0x1) == 1;
+                self.cob_id = (t & 0xFFFF) as u16;
+            }
             2 => self.transmission_type = var.default_value().to(),
             3 => self.inhibit_time = var.default_value().to(),
             5 => self.event_timer = var.default_value().to(),
             _ => {}
         }
         Some(self.cob_id)
-        // if var.index == 0x1801 {
-        //     info!("xfguo: update_comm_params() 9, var = {:#x?}, pdo = {:#x?}", var, self);
-        // }
     }
 
-    pub fn update_map_params(&mut self, var: &Variable) -> Option<u16> {
+    fn update_map_params(&mut self, var: &Variable) -> Option<u16> {
         // info!("xfguo: update_map_params() 0. var = {:#x?}", var);
         if var.sub_index() == 0 {
             let t = var.default_value().to();
@@ -116,12 +110,6 @@ pub struct PdoObjects {
     cob_to_index: HashMap<u16, usize>,
 }
 
-impl Default for PdoObjects {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl PdoObjects {
     pub fn new() -> Self {
         let default_pdo = PdoObject {
@@ -129,7 +117,7 @@ impl PdoObjects {
             _not_used_rtr_allowed: false,
             _not_used_is_29bit_can_id: false,
             largest_sub_index: 5,
-            cob_id: 0x202,
+            cob_id: 0,
             transmission_type: 0x01,
             inhibit_time: 0,
             event_timer: 0,
@@ -272,7 +260,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         Ok(())
     }
 
-    pub(crate) fn gen_pdo_frame(&mut self, cob_id: u16, num_of_map_objs: u8, mappings: Vec<(u16, u8, u8)>)
+    fn gen_pdo_frame(&mut self, cob_id: u16, num_of_map_objs: u8, mappings: Vec<(u16, u8, u8)>)
                                 -> Result<CAN::Frame, ErrorCode> {
         let mut data_pairs = Vec::new();
         for (idx, sub_idx, bits) in mappings.iter().take(num_of_map_objs as usize) {

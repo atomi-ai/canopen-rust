@@ -1,15 +1,17 @@
-use core::ops::RangeInclusive;
-use embedded_can::{nb::Can, Frame};
-use crate::emergency::{EmergencyErrorCode, ErrorRegister};
+use core::ops::Range;
 
+use embedded_can::{Frame, nb::Can};
+
+use crate::{error, info};
+use crate::constant::{ALL_REGISTERS_RANGE, APPLICATION_REGISTERS_RANGE, COB_FUNC_MASK, COB_FUNC_NMT, COB_FUNC_RECEIVE_SDO, COB_FUNC_RPDO_0, COB_FUNC_RPDO_3, COB_FUNC_SYNC, COMMUNICATION_REGISTERS_RANGE};
+use crate::emergency::{EmergencyErrorCode, ErrorRegister};
+use crate::error::ErrorCode;
 use crate::object_directory::ObjectDirectory;
 use crate::pdo::PdoObjects;
 use crate::prelude::*;
 use crate::sdo_server::SdoState;
 use crate::sdo_server::SdoState::Normal;
 use crate::util::{create_frame, get_cob_id};
-use crate::{error, info};
-use crate::error::ErrorCode;
 
 const DEFAULT_BLOCK_SIZE: u8 = 0x7F;
 
@@ -31,6 +33,15 @@ impl NodeState {
         }
     }
 }
+
+// Node commands:
+const NODE_START: u8 = 0x1;
+// To operational
+const NODE_STOP: u8 = 0x2;
+const NODE_PRE_OPERATE: u8 = 0x80;
+// To pre-operational
+const NODE_RESET: u8 = 0x81;
+const NODE_RESET_COMMUNICATION: u8 = 0x82;
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum NodeEvent {
@@ -128,7 +139,8 @@ impl<CAN> Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
 
 impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     pub(crate) fn update_pdo_params(&mut self) -> Result<(), ErrorCode> {
-        for i in (0x1400..0x1C00).step_by(0x200) {
+        // TODO(zephyr): don't hard-code here.
+        for i in (0x1400..=0x1BFF).step_by(0x200) {
             for j in 0..4 {
                 let idx = i + j;
 
@@ -169,7 +181,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         true
     }
 
-    fn reset_object_directory_range(&mut self, range: RangeInclusive<u16>, full_range: bool) -> bool {
+    fn reset_object_directory_range(&mut self, range: Range<u16>, full_range: bool) -> bool {
         let indexes_to_reset: Vec<u16> = if full_range {
             self.object_directory.index_to_object.keys().cloned().collect()
         } else {
@@ -200,21 +212,22 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
     /// Rebuilds communication specific fields for the object directory.
     pub(crate) fn reset_communication(&mut self) -> bool {
-        self.reset_object_directory_range(0x1000..=0x1FFF, false)
+        self.reset_object_directory_range(COMMUNICATION_REGISTERS_RANGE, false)
     }
 
     /// Rebuilds application specific fields for the object directory.
     pub(crate) fn reset_application(&mut self) -> bool {
-        self.reset_object_directory_range(0x6000..=0x9FFF, false)
+        self.reset_object_directory_range(APPLICATION_REGISTERS_RANGE, false)
     }
 
     /// Rebuilds the whole object directory
     pub(crate) fn reset(&mut self) -> bool {
-        self.reset_object_directory_range(0x1000..=0x9FFF, true)
+        self.reset_object_directory_range(ALL_REGISTERS_RANGE, true)
     }
 
     fn process_nmt_frame(&mut self, frame: &CAN::Frame) {
         if frame.dlc() != 2 {
+            error!("NMT frame length should be 2");
             return;
         }
         let (cs, nid) = (frame.data()[0], frame.data()[1]);
@@ -223,30 +236,30 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             return;
         }
         match cs {
-            1 => {
+            NODE_START => {
                 info!("NMT: change state to OPERATIONAL");
                 self.state = NodeState::Operational;
                 self.trigger_event(NodeEvent::NodeStart);
-            },
-            2 => if self.state != NodeState::Init {
+            }
+            NODE_STOP => if self.state != NodeState::Init {
                 info!("NMT: change state to STOPPED");
                 self.state = NodeState::Stopped;
             },
-            0x80 => {
+            NODE_PRE_OPERATE => {
                 info!("NMT: change state to PRE-OPERATIONAL");
                 self.state = NodeState::PreOperational
-            },
-            0x81 => {
+            }
+            NODE_RESET => {
                 info!("NMT: change state to INIT, will reset the whole system");
                 self.state = NodeState::Init;
                 self.reset();
-            },
-            0x82 => {
+            }
+            NODE_RESET_COMMUNICATION => {
                 info!("NMT: change state to INIT, will reset the communication");
                 self.state = NodeState::Init;
                 self.reset_communication();
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
@@ -258,7 +271,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 // trigger emergency
                 let bytes = cob_id.to_le_bytes();
                 return self.trigger_emergency(
-                    EmergencyErrorCode::PdoNotProcessed, ErrorRegister::GenericError, &bytes)
+                    EmergencyErrorCode::PdoNotProcessed, ErrorRegister::GenericError, &bytes);
             }
             rpdo.set_cached_data(frame.data());
             Ok(())
@@ -271,7 +284,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         }
     }
 
-    pub fn transmit(&mut self, frame: &CAN::Frame) {
+    pub(crate) fn transmit(&mut self, frame: &CAN::Frame) {
         match self.can_network.transmit(frame) {
             Ok(_) => {
                 info!("Sent frame {:x?}", frame);
@@ -296,17 +309,17 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             Err(nb::Error::WouldBlock) => return,  // try next time
             Err(nb::Error::Other(err)) => {
                 info!("Errors in reading CAN frame, {:?}", err);
-                return
+                return;
             }
         };
         info!("got frame: {:?}", frame);
         if let Some(cob_id) = get_cob_id(&frame) {
-            match cob_id & 0xFF80 {
-                0x000 => self.process_nmt_frame(&frame),
-                0x200..=0x500 => self.process_rpdo_frame(&frame),
-                0x080 => self.process_sync_frame(),
-                0x600 => self.process_sdo_frame(&frame),
-                _ => {},
+            match cob_id & COB_FUNC_MASK {
+                COB_FUNC_NMT => self.process_nmt_frame(&frame),
+                COB_FUNC_RPDO_0..=COB_FUNC_RPDO_3 => self.process_rpdo_frame(&frame),
+                COB_FUNC_SYNC => self.process_sync_frame(),
+                COB_FUNC_RECEIVE_SDO => self.process_sdo_frame(&frame),
+                _ => {}
             }
         }
     }
@@ -318,7 +331,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         }
     }
 
-    pub fn trigger_event(&mut self, event: NodeEvent) {
+    fn trigger_event(&mut self, event: NodeEvent) {
         if event == NodeEvent::NodeStart {
             self.event_count = 0;
             self.sync_count = 0;
@@ -336,8 +349,9 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         }
     }
 
+    // TODO(zephyr): In the version, we hard-code the timer as 1ms for timer event.
+    // We may need to modify this in the future.
     pub fn event_timer_callback(&mut self) {
-        // info!("event_timer_callback 0, state = {:?}", self.state);
         if self.heartbeats_timer > 0 {
             self.heartbeats += 1;
             if self.heartbeats % self.heartbeats_timer == 0 {

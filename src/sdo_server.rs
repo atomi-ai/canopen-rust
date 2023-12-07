@@ -1,5 +1,3 @@
-// TODO(zephyr): Remove all hard-code string / int
-// TODO(zephyr): Make coverage to a high-enough level.
 use embedded_can::Frame;
 use embedded_can::nb::Can;
 
@@ -7,9 +5,9 @@ use crate::cmd_header::{
     SdoBlockDownloadInitiateCmd, SdoBlockUploadCmd, SdoDownloadInitiateCmd, SdoDownloadSegmentCmd,
     SdoEndBlockDownloadCmd, SdoInitBlockUploadCmd,
 };
-use crate::error::{AbortCode, ErrorCode};
+use crate::constant::{COB_FUNC_TRANSMIT_SDO, REG_PRODUCER_HEARTBEAT_TIME, REG_RESTORE_DEFAULT_PARAMETERS, RESET_MAGIC_CODE};
+use crate::error::ErrorCode;
 use crate::error;
-use crate::constant::{RESET_MAGIC_CODE, RESET_REGISTER_ID};
 use crate::error::AbortCode::{CommandSpecifierNotValidOrUnknown, DataTransferOrStoreFailed, GeneralError, InvalidBlockSize, ObjectCannotBeMappedToPDO, ToggleBitNotAlternated};
 use crate::node::Node;
 use crate::prelude::*;
@@ -17,7 +15,7 @@ use crate::sdo_server::SdoState::{
     ConfirmUploadSdoBlock, DownloadSdoBlock, EndSdoBlockDownload, Normal, SdoSegmentDownload,
     SdoSegmentUpload, StartSdoBlockUpload,
 };
-use crate::util::{crc16_canopen_with_lut, flatten, create_frame_with_padding, convert_bytes_to_u32, make_abort_error};
+use crate::util::{convert_bytes_to_u32, crc16_canopen_with_lut, create_frame_with_padding, flatten, make_abort_error};
 
 /// Represents the various states of the SDO (Service Data Object) communication process.
 /// These states govern the different phases or modes of SDO transmissions in a CANopen system.
@@ -46,21 +44,21 @@ pub enum SdoState {
 
 impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     fn create_can_frame(&self, data: &[u8]) -> Result<CAN::Frame, ErrorCode> {
-        create_frame_with_padding(0x580 | self.node_id as u16, data).map_err(|ec| {
-            make_abort_error(AbortCode::GeneralError, format!("{:?}", ec))
+        create_frame_with_padding(COB_FUNC_TRANSMIT_SDO | self.node_id as u16, data).map_err(|ec| {
+            make_abort_error(GeneralError, format!("{:?}", ec))
         })
     }
 
-    pub(crate) fn create_sdo_frame(&self, cmd: u8, index: u16, sub_index: u8, data: &[u8])
-        -> Result<CAN::Frame, ErrorCode> {
+    fn create_sdo_frame(&self, cmd: u8, index: u16, sub_index: u8, data: &[u8])
+                        -> Result<CAN::Frame, ErrorCode> {
         let bytes = flatten(&[&[cmd], &index.to_le_bytes(), &sub_index.to_le_bytes(), data]);
-        create_frame_with_padding(0x580 | self.node_id as u16, bytes.as_slice()).map_err(|ec| {
-            make_abort_error(AbortCode::GeneralError, format!("{:?}", ec))
+        create_frame_with_padding(COB_FUNC_TRANSMIT_SDO | self.node_id as u16, bytes.as_slice()).map_err(|ec| {
+            make_abort_error(GeneralError, format!("{:?}", ec))
         })
     }
 
-    pub(crate) fn next_state(&mut self, state: SdoState, res: Result<CAN::Frame, ErrorCode>)
-        -> Result<CAN::Frame, ErrorCode> {
+    fn next_state(&mut self, state: SdoState, res: Result<CAN::Frame, ErrorCode>)
+                  -> Result<CAN::Frame, ErrorCode> {
         self.sdo_state = state;
         res
     }
@@ -88,7 +86,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             StartSdoBlockUpload => self.start_block_upload(frame.data()),
             ConfirmUploadSdoBlock => self.confirm_block_upload(frame.data()),
             Normal => {
-                // ccs: 0x1 / 0x2 / 0x6 / 0x5
+                // ccs: 0x1 / 0x2 / 0x6 / 0x5, based on Canopen 301.
                 match ccs {
                     0x1 => self.initiate_download(index, sub_index, frame.data()),
                     0x2 => self.initiate_upload(index, sub_index),
@@ -102,7 +100,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         match res {
             Ok(resp) => {
                 self.transmit(&resp);
-            },
+            }
             Err(ErrorCode::AbortCodeWrapper { abort_code, .. }) => {
                 let (idx, sidx) = match self.sdo_state {
                     Normal => (index, sub_index),
@@ -120,7 +118,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                          sub_index = {}, abort_code = {:x?}", idx, sidx, abort_code);
                     }
                 }
-            },
+            }
             Err(err) => {
                 error!("Errors in processing SDO frame: {:x?}, err: {:?}", frame, err);
             }
@@ -196,7 +194,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             // Handle expedited download.
             let data = &req[4..(8 - cmd.n() as usize)];
             self.set_value_with_check(index, sub_index, data)?;
-            return self.create_sdo_frame(0x60, index, sub_index, &[0, 0, 0, 0])
+            return self.create_sdo_frame(0x60, index, sub_index, &[0, 0, 0, 0]);
         }
 
         // Set up for normal download.
@@ -274,81 +272,6 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         self.next_state(DownloadSdoBlock, response)
     }
 
-    fn validate_pdo_mapping_params_on_setting(&mut self, index: u16, sub_index: u8, data: &[u8])
-        -> Result<(), ErrorCode> {
-        // Early return if sub_index is not within valid PDO mapping range.
-        if !(sub_index > 0 && sub_index <= crate::pdo::MAX_PDO_MAPPING_LENGTH) {
-            return Ok(());
-        }
-
-        // Check data length is as expected for PDO mapping.
-        if data.len() != 4 {
-            return Err(make_abort_error(ObjectCannotBeMappedToPDO, "".to_string()));
-        }
-
-        // Extract destination index and sub-index from data.
-        let dest_index = (data[3] as u16) << 8 | (data[2] as u16);
-        let dest_sub_index = data[1];
-
-        // Retrieve variable and validate if it can be mapped to PDO.
-        let var = self.object_directory.get_variable(dest_index, dest_sub_index)?;
-        if !var.pdo_mappable() || (index < 0x1800 && !var.access_type().is_writable()) {
-            return Err(make_abort_error(ObjectCannotBeMappedToPDO, "".to_string()));
-        }
-
-        Ok(())
-    }
-
-    fn try_reset(&mut self, sub_index: u8, data: &[u8]) -> Result<bool, ErrorCode> {
-        let magic_code = u32::from_le_bytes(data[0..4].try_into().map_err(|_| {
-            error!("Errors in converting data: {:x?}", data);
-            make_abort_error(GeneralError, "".to_string())
-        })?);
-        if magic_code != RESET_MAGIC_CODE {
-            return Err(make_abort_error(DataTransferOrStoreFailed, "".to_string()))
-        }
-        let success = match sub_index {
-            0x1 => self.reset(),
-            0x2 => self.reset_communication(),
-            0x3 => self.reset_application(),
-            _ => {false}
-        };
-
-        if success {
-            self.object_directory.set_value(RESET_REGISTER_ID, sub_index, &1u32.to_le_bytes(), true)?;
-        }
-
-        Ok(true)
-    }
-
-    fn set_value_preprocess(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<bool, ErrorCode> {
-        match index {
-            0x1600..=0x17FF | 0x1A00..=0x1BFF =>
-                self.validate_pdo_mapping_params_on_setting(index, sub_index, data).map(|_| false),
-            RESET_REGISTER_ID => self.try_reset(sub_index, data),
-            _ => Ok(false),
-        }
-    }
-
-    fn set_value_with_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), ErrorCode> {
-        if self.set_value_preprocess(index, sub_index, data)? {
-            return Ok(())
-        }
-        let var = self.object_directory.set_value(index, sub_index, data, false)?;
-        match index {
-            0x1400..=0x1BFF => {
-                let var_clone = var.clone();
-                self.update(&var_clone)?;
-            },
-            0x1017 => {
-                let t: u16 = var.default_value().to();
-                self.heartbeats_timer = t as u32;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     fn block_download(&mut self, req: &[u8]) -> Result<CAN::Frame, ErrorCode> {
         let seqno = req[0] & 0x7F;
         self.current_seq_number += 1;
@@ -393,7 +316,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     }
 
     fn init_block_upload(&mut self, index: u16, sub_index: u8, req: &[u8])
-        -> Result<CAN::Frame, ErrorCode> {
+                         -> Result<CAN::Frame, ErrorCode> {
         let cmd = SdoInitBlockUploadCmd::from(req[0]);
         let (blk_size, _pst) = (req[4], req[5]);
 
@@ -441,9 +364,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 // This is a special case, directly transmit (total_seq - 1) frames,
                 // only leave the last one at last for change the state.
                 let (s, e) = ((i * 7) as usize, (i * 7 + 7) as usize);
-                // TODO(zephyr): replace 0x580 with a const.
-                let bytes = [&[i+1], &buf[s..e]].concat();
-                let frame = create_frame_with_padding(0x580 | self.node_id as u16, &bytes)?;
+                let bytes = [&[i + 1], &buf[s..e]].concat();
+                let frame = create_frame_with_padding(COB_FUNC_TRANSMIT_SDO | self.node_id as u16, &bytes)?;
                 self.transmit(&frame);
             }
             let s = ((total_seqs - 1) * 7) as usize;
@@ -469,7 +391,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         let n = (7 - buf.len() % 7) as u8;
         let resp_cmd = 0xC1 | (n << 2);
         let crc: u16 = if self.need_crc {
-            crc16_canopen_with_lut(buf.as_slice())
+            crc16_canopen_with_lut(buf)
         } else {
             0
         };
@@ -478,4 +400,80 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         response_data.extend([0, 0, 0, 0, 0]);
         self.create_can_frame(&response_data)
     }
+
+    fn validate_pdo_mapping_params_on_setting(&mut self, index: u16, sub_index: u8, data: &[u8])
+                                              -> Result<(), ErrorCode> {
+        // Early return if sub_index is not within valid PDO mapping range.
+        if !(sub_index > 0 && sub_index <= crate::pdo::MAX_PDO_MAPPING_LENGTH) {
+            return Ok(());
+        }
+
+        // Check data length is as expected for PDO mapping.
+        if data.len() != 4 {
+            return Err(make_abort_error(ObjectCannotBeMappedToPDO, "".to_string()));
+        }
+
+        // Extract destination index and sub-index from data.
+        let dest_index = (data[3] as u16) << 8 | (data[2] as u16);
+        let dest_sub_index = data[1];
+
+        // Retrieve variable and validate if it can be mapped to PDO.
+        let var = self.object_directory.get_variable(dest_index, dest_sub_index)?;
+        if !var.pdo_mappable() || (index < 0x1800 && !var.access_type().is_writable()) {
+            return Err(make_abort_error(ObjectCannotBeMappedToPDO, "".to_string()));
+        }
+
+        Ok(())
+    }
+
+    fn try_reset(&mut self, sub_index: u8, data: &[u8]) -> Result<bool, ErrorCode> {
+        let magic_code = u32::from_le_bytes(data[0..4].try_into().map_err(|_| {
+            error!("Errors in converting data: {:x?}", data);
+            make_abort_error(GeneralError, "".to_string())
+        })?);
+        if magic_code != RESET_MAGIC_CODE {
+            return Err(make_abort_error(DataTransferOrStoreFailed, "".to_string()));
+        }
+        let success = match sub_index {
+            0x1 => self.reset(),
+            0x2 => self.reset_communication(),
+            0x3 => self.reset_application(),
+            _ => { false }
+        };
+
+        if success {
+            self.object_directory.set_value(REG_RESTORE_DEFAULT_PARAMETERS, sub_index, &1u32.to_le_bytes(), true)?;
+        }
+
+        Ok(true)
+    }
+
+    fn set_value_preprocess(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<bool, ErrorCode> {
+        match index {
+            0x1600..=0x17FF | 0x1A00..=0x1BFF =>
+                self.validate_pdo_mapping_params_on_setting(index, sub_index, data).map(|_| false),
+            REG_RESTORE_DEFAULT_PARAMETERS => self.try_reset(sub_index, data),
+            _ => Ok(false),
+        }
+    }
+
+    fn set_value_with_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), ErrorCode> {
+        if self.set_value_preprocess(index, sub_index, data)? {
+            return Ok(());
+        }
+        let var = self.object_directory.set_value(index, sub_index, data, false)?;
+        match index {
+            0x1400..=0x1BFF => {
+                let var_clone = var.clone();
+                self.update(&var_clone)?;
+            }
+            REG_PRODUCER_HEARTBEAT_TIME => {
+                let t: u16 = var.default_value().to();
+                self.heartbeats_timer = t as u32;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
 }
