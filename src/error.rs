@@ -7,9 +7,12 @@ pub enum ErrorCode {
     ByteLengthExceedsLimit,
     InvalidStandardId { cob_id: u16 },
     FrameCreationFailed { data: Vec<u8> },
+    NoCobIdInFrame,
+    NoCobIdInRpdo { cob_id: u16 },
     StringToValueFailed { data_type: DataType, str: String },
     ProcesedSectionFailed { section_name: String, more_info: String },
     AbortCodeWrapper { abort_code: AbortCode, more_info: String },
+    NoPdoObjectInIndex { index: usize },
     LegacyError { str: String },
 }
 
@@ -27,6 +30,9 @@ impl Debug for ErrorCode {
                 section_name, more_info),
             ErrorCode::AbortCodeWrapper { abort_code, more_info } => write!(f,
                 "Got Canopen abort code: {:x?}, and more information: {:?}", abort_code, more_info),
+            ErrorCode::NoCobIdInFrame => write!(f, "No cob id"),
+            ErrorCode::NoCobIdInRpdo { cob_id } => write!(f, "No cob id ({:x?}) in Rpdo", cob_id),
+            ErrorCode::NoPdoObjectInIndex { index } => write!(f, "No index({}) in pdo object", index),
         }
     }
 }

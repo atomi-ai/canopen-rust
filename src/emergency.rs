@@ -1,11 +1,11 @@
-use alloc::{format, vec};
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use embedded_can::Frame;
 use embedded_can::nb::Can;
-use crate::error::{AbortCode, ErrorCode};
+use crate::error::ErrorCode;
 use crate::node::Node;
-use crate::util::{create_frame_with_padding, make_abort_error};
+use crate::util::create_frame_with_padding;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum EmergencyErrorCode {
@@ -80,17 +80,9 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         self.transmit(&frame);
 
         let tmp_count = self.error_count + 1;
-        let res = (|| -> Result<(), AbortCode> {
-            self.object_directory.set_value(0x1003, 0x0, &[tmp_count], true)?;
-            self.object_directory.set_value(0x1003, tmp_count, &[eecl, eech, 0, 0], true)?;
-            self.object_directory.set_value(0x1001, 0x0, &[erc], true)?;
-            Ok(())
-        })();
-        res.map_err(|abort_code| {
-            make_abort_error(abort_code, format!(
-                "Errors in setting emergency registers, tmp_count = {:?}, eec = {:?}, er = {:?}",
-                tmp_count, eec, er).as_str())
-        })?;
+        self.object_directory.set_value(0x1003, 0x0, &[tmp_count], true)?;
+        self.object_directory.set_value(0x1003, tmp_count, &[eecl, eech, 0, 0], true)?;
+        self.object_directory.set_value(0x1001, 0x0, &[erc], true)?;
         self.error_count = tmp_count;
 
         let mut reset_v: Vec<u8> = vec![0, 0, 0];

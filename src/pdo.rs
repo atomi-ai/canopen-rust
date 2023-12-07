@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
@@ -6,11 +7,12 @@ use embedded_can::Frame;
 use embedded_can::nb::Can;
 use hashbrown::HashMap;
 
-use crate::error::AbortCode;
-use crate::{error, info};
+use crate::error::{AbortCode, ErrorCode};
+use crate::info;
+use crate::error::AbortCode::{ExceedPDOSize, GeneralError};
 use crate::node::{Node, NodeEvent};
 use crate::object_directory::Variable;
-use crate::util::create_frame;
+use crate::util::{create_frame, make_abort_error, vec_to_u64};
 
 pub(crate) const MAX_PDO_MAPPING_LENGTH: u8 = 64;
 
@@ -33,7 +35,9 @@ pub struct PdoObject {
     mappings: [(u16, u8, u8); MAX_PDO_MAPPING_LENGTH as usize],
     // index, sub_index, length
     total_length: u8,
-    // TODO(zephyr): 重新整理一下cached_data的使用。
+
+    // Used by RPDO only. Because for TPDO, we may need to transfer data out in high frequency,
+    // it isn't suitable to cache high freq data here.
     cached_data: Vec<u8>,
 }
 
@@ -56,9 +60,13 @@ impl PdoObject {
     pub fn event_timer(&self) -> u16 {
         self.event_timer
     }
+
     pub fn set_cached_data(&mut self, cached_data: &[u8]) {
         self.cached_data.clear();
         self.cached_data.extend_from_slice(cached_data);
+    }
+    pub fn clear_cached_data(&mut self) {
+        self.cached_data.clear();
     }
 }
 
@@ -104,7 +112,7 @@ impl PdoObject {
 
 #[derive(Debug, Clone)]
 pub struct PdoObjects {
-    pdos: [PdoObject; 8],
+    pdos: [Option<PdoObject>; 8],
     cob_to_index: HashMap<u16, usize>,
 }
 
@@ -124,17 +132,15 @@ impl PdoObjects {
             total_length: 0,
             cached_data: vec![],
         };
-        let pdos = [(); 8].map(|_| default_pdo.clone());
+        let pdos = [(); 8].map(|_| Some(default_pdo.clone()));
         PdoObjects { pdos, cob_to_index: HashMap::new() }
     }
 
-    // TODO(zephyr): Reorg functions below again.
-    pub fn get_rpdo_index(&self, cod_id: u16) -> Option<&usize> {
-        self.cob_to_index.get(&cod_id)
+    pub fn get_mut_rpdo_with_cob_id(&mut self, cob_id: u16) -> Result<&mut PdoObject, ErrorCode> {
+        let index = *self.cob_to_index.get(&cob_id).ok_or(ErrorCode::NoCobIdInRpdo {cob_id})?;
+        let pdo = self.pdos[index].as_mut().ok_or(ErrorCode::NoPdoObjectInIndex {index})?;
+        Ok(pdo)
     }
-
-    pub fn get_mut_rpdo(&mut self, index: usize) -> &mut PdoObject { &mut self.pdos[index] }
-    pub fn get_rpdo(&self, index: usize) -> &PdoObject { &self.pdos[index] }
 }
 
 fn should_trigger_pdo(is_sync: bool, event: NodeEvent, transmission_type: u32, event_times: u32, count: u32) -> bool {
@@ -160,90 +166,110 @@ fn should_trigger_pdo(is_sync: bool, event: NodeEvent, transmission_type: u32, e
 }
 
 impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
-    // TODO(zephyr): Change type to Sync / Event.
-    pub(crate) fn transmit_pdo_messages(&mut self, is_sync: bool, event: NodeEvent, count: u32) {
-        // info!("xfguo: transmit_pdo_messages 0");
-        for i in 4..8 {
-            let pdo = &self.pdo_objects.pdos[i];
 
-            if !pdo.is_pdo_valid {
-                continue;
-            }
-
-            // Skip if don't need to transmit a PDO msg.
-            // info!("xfguo: transmit_pdo_messages 1.1, count = {}, pdo[{}] = {:x?}", count, i, pdo);
-            let tt = pdo.transmission_type as u32;
-            if !should_trigger_pdo(is_sync, event, tt, pdo.event_timer as u32, count) {
-                continue;
-            }
-
-            // info!("xfguo: transmit_pdo_messages 2, count = {}, pdo[{}] = {:#x?}", count, i, pdo);
-            // Emit a TPDO message.
-            match self.gen_pdo_frame(pdo.cob_id as u16, pdo.num_of_map_objs,
-                                     (&pdo.mappings[0..pdo.num_of_map_objs as usize]).to_vec()) {
-                Ok(f) => {
-                    info!("Start to send TPDO frame {:?}", f);
-                    self.transmit(&f);
-                }
-                Err(err) => {
-                    info!("Errors in generating PDO frame. err: {:?}", err);
-                }
-            }
-        }
-    }
-
+    // RPDO section
     pub(crate) fn save_rpdo_messages(&mut self, is_sync: bool, event: NodeEvent, count: u32) {
-        for i in 0..4 {
-            let pdo = &self.pdo_objects.pdos[i];
-
-            // if count % 10 == 3 { info!("save_rpdo_messages() 1.1, count = {}, pdo = {:x?} ", count, pdo); }
-
-            if !pdo.is_pdo_valid {
-                continue;
-            }
-
-            // Skip if don't need to transmit a PDO msg.
+        for pdo in self.pdo_objects.pdos[0..4].iter_mut().filter_map(|x| x.as_mut()) {
             let tt = pdo.transmission_type as u32;
-            if !should_trigger_pdo(is_sync, event, tt, pdo.event_timer as u32, count) {
-                continue;
+
+            if !pdo.is_pdo_valid
+                || !should_trigger_pdo(is_sync, event, tt, pdo.event_timer as u32, count)
+                || pdo.cached_data.is_empty() {
+                continue
             }
 
             // info!("save_rpdo_messages() 1.3, count = {}, pdo = {:#x?} ", count, pdo);
-            // Save rpdo message in the cache.
-            let u = &pdo.cached_data;
-            if u.len() == 0 {
+            let mapping_lengths: Vec<u8> = pdo.mappings[..pdo.num_of_map_objs as usize]
+                .iter()
+                .map(|(_, _, l)| *l)
+                .collect();
+
+            let unpacked_data = unpack_data(&pdo.cached_data, &mapping_lengths);
+            if unpacked_data.len() < pdo.num_of_map_objs as usize {
+                // TODO(zephyr): Error, do we need to send EMGY msg?
+                info!("error: unmatch length: unpacked_data = {:?}, mapping = {:?}", unpacked_data, pdo.mappings);
                 continue;
-            }
-            // info!("save_rpdo_messages() 1.4: u = {:02x?}", u);
-            let mut v: Vec<u8> = vec![];
-            for ii in 0..pdo.num_of_map_objs {
-                let (_, _, l) = pdo.mappings[ii as usize];
-                v.push(l);
-            }
-            // info!("save_rpdo_messages() 1.5: v = {:?}", v);
-            let r = unpack_data(u, &v);
-            // info!("save_rpdo_messages() 1.6: u = {:02x?}, v = {:?}, unpacked r = {:#x?}", u, v, r);
-            if r.len() < pdo.num_of_map_objs as usize {
-                // TODO(zephyr): Error, need to send EMGY msg.
-                info!("error: unmatch length: r = {:?}, mapping = {:?}", r, pdo.mappings);
-                continue;
-            }
-            for ii in 0..pdo.num_of_map_objs {
-                let idx = ii as usize;
-                let (i, si, _) = pdo.mappings[idx];
-                let (data, _) = r[idx];
-                let a = data.to_le_bytes();
-                // info!("xfguo: a = {:02x?}, data = {:0x?}", a, data);
-                info!("rpdo update variable: [{:04x?}:{:02x?}] = {:x?}", i, si, a);
-                self.object_directory.set_value_with_fitting_size(i, si, &a);
             }
 
-            self.pdo_objects.pdos[i].cached_data.clear();
+            for (idx, &(i, si, _)) in pdo.mappings.iter().enumerate().take(pdo.num_of_map_objs as usize) {
+                let (data, _) = unpacked_data[idx];
+                self.object_directory.set_value_with_fitting_size(i, si, &data.to_le_bytes());
+            }
+
+            pdo.clear_cached_data();
         }
     }
 
+    fn validate_pdo_mappings(&mut self, pdo: &PdoObject, index: u16) -> Result<(), ErrorCode> {
+        for si in (1..=pdo.num_of_map_objs as usize).rev() {
+            self.object_directory.get_variable(index, si as u8)
+                .map_err(|_| make_abort_error(AbortCode::ObjectCannotBeMappedToPDO, "".to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn calculate_total_length(pdo: &PdoObject) -> u8 {
+        pdo.mappings.iter()
+            .take(pdo.num_of_map_objs as usize)
+            .map(|mapping| mapping.2)
+            .sum()
+    }
+
+    pub(crate) fn update(&mut self, var: &Variable) -> Result<(), ErrorCode> {
+        let (pdo_type, pdo_index) = (var.index() >> 8, (var.index() & 0xF) as usize);
+        if pdo_type < 0x14 || pdo_type >= 0x1C {
+            return Ok(());
+        }
+        let index = pdo_index + (pdo_type >= 0x18) as usize * 4;
+        let mut pdo = self.pdo_objects.pdos[index].take().ok_or(
+            ErrorCode::NoPdoObjectInIndex {index})?;
+        let result = (|| -> Result<(), ErrorCode> {
+            if pdo_type & 0x3 < 2 {
+                pdo.update_comm_params(var);
+                self.pdo_objects.cob_to_index.insert(pdo.cob_id, pdo_index);
+            } else {
+                pdo.update_map_params(var);
+                if var.sub_index() == 0 {
+                    self.validate_pdo_mappings(&pdo, var.index())?;
+                    pdo.total_length = Node::<CAN>::calculate_total_length(&pdo);
+                    if pdo.total_length > MAX_PDO_MAPPING_LENGTH {
+                        return Err(make_abort_error(ExceedPDOSize, "".to_string()));
+                    }
+                }
+            }
+            Ok(())
+        })();
+        self.pdo_objects.pdos[index] = Some(pdo);
+        result
+    }
+
+    // TPDO section
+    pub(crate) fn transmit_pdo_messages(&mut self, is_sync: bool, event: NodeEvent, count: u32)
+        -> Result<(), ErrorCode> {
+        // info!("xfguo: transmit_pdo_messages 0");
+        for index in 4..8 {
+            let pdo = self.pdo_objects.pdos[index].take().ok_or(ErrorCode::NoPdoObjectInIndex {index})?;
+            let result = (|| -> Result<(), ErrorCode> {
+                let tt = pdo.transmission_type as u32;
+                if !pdo.is_pdo_valid || !should_trigger_pdo(is_sync, event, tt, pdo.event_timer as u32, count) {
+                    return Ok(())
+                }
+
+                // info!("xfguo: transmit_pdo_messages 2, count = {}, pdo[{}] = {:#x?}", count, i, pdo);
+                // Emit a TPDO message.
+                let frame = self.gen_pdo_frame(
+                    pdo.cob_id as u16, pdo.num_of_map_objs,
+                    (&pdo.mappings[0..pdo.num_of_map_objs as usize]).to_vec())?;
+                Ok(self.transmit(&frame))
+            })();
+            self.pdo_objects.pdos[index] = Some(pdo);
+            result?
+        }
+        Ok(())
+    }
+
     pub(crate) fn gen_pdo_frame(&mut self, cob_id: u16, num_of_map_objs: u8, mappings: Vec<(u16, u8, u8)>)
-                                -> Result<CAN::Frame, AbortCode> {
+                                -> Result<CAN::Frame, ErrorCode> {
         // TODO(zephyr): Reorg code below, use pdo.cached_data.
         let mut t = Vec::new();
         // info!("xfguo: gen_pdo_frame() 0, {}, {:#x?}", num_of_map_objs, mappings);
@@ -255,106 +281,37 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                     // info!("xfguo: gen_pdo_frame() 2.2.1, {:#x?}:{:#x?} => {:#x?}, t = {:#x?}",
                     //     idx, sub_idx, v, t);
                 }
-                Err(_) => return Err(AbortCode::GeneralError),
+                Err(_) => return Err(make_abort_error(GeneralError, "".to_string())),
             }
         }
         let packet = pack_data(&t);
-        create_frame(cob_id, &packet).map_err(|ec| {
-            error!("Errors in creating frame, err: {:?}", ec);
-            AbortCode::GeneralError
-        })
-    }
-
-    pub fn update(&mut self, var: &Variable) -> Result<(), AbortCode> {
-        let (t, x) = (var.index() >> 8, (var.index() & 0xF) as usize);
-        if t < 0x14 || t >= 0x1C {
-            return Ok(());
-        }
-        let pdo = if t < 0x18 {
-            &mut self.pdo_objects.pdos[x] } else {
-            &mut self.pdo_objects.pdos[x + 4] };
-        if t % 4 < 2 {
-            pdo.update_comm_params(var);
-            self.pdo_objects.cob_to_index.insert(pdo.cob_id, x);
-        } else {
-            pdo.update_map_params(var);
-            if var.sub_index() == 0 {
-                for si in (1..=pdo.num_of_map_objs as usize).rev() {
-                    match self.object_directory.get_variable(var.index(), si as u8) {
-                        Ok(_) => {}
-                        Err(_) => { return Err(AbortCode::ObjectCannotBeMappedToPDO); }
-                    }
-                }
-
-                let mut total = 0u8;
-                for si in 0..pdo.num_of_map_objs as usize {
-                    let (_, _, l) = pdo.mappings[si];
-                    total += l;
-                }
-                if total > MAX_PDO_MAPPING_LENGTH {
-                    return Err(AbortCode::ExceedPDOSize);
-                }
-                pdo.total_length = total;
-            }
-        }
-
-        Ok(())
-    }
-
-    // TODO(zephyr): Not used?
-    #[allow(dead_code)]
-    pub(crate) fn update_cached_pdo(&mut self, tpdo_index: usize) -> Vec<u8> {
-        let pdo = &self.pdo_objects.pdos[tpdo_index];
-        let mut t = Vec::new();
-        for i in 0..pdo.num_of_map_objs {
-            let (idx, sub_idx, bits) = pdo.mappings[i as usize];
-            match self.object_directory.get_variable(idx, sub_idx) {
-                Ok(v) => {
-                    t.push((vec_to_u64(&v.default_value().data()), bits));
-                }
-                Err(_) => return Vec::new()
-            }
-        }
-        pack_data(&t)
+        create_frame(cob_id, &packet)
     }
 }
 
-fn vec_to_u64(v: &Vec<u8>) -> u64 {
-    let mut res = 0u64;
-    for x in v {
-        res = (res << 8) | (*x as u64);
-    }
-    res
-}
-
-fn pack_data(vec: &Vec<(u64, u8)>) -> Vec<u8> {
+fn pack_data(vec: &[(u64, u8)]) -> Vec<u8> {
     let mut merged = 0u64;
-    let mut total_bits = 0u8;
-    for (data, bits) in vec {
-        total_bits += bits;
-        // TODO(zephyr): optimize the expr below
-        merged = (merged << bits) | (data & ((1 << bits) - 1));
+    let mut total_bits = 0usize;
+
+    for &(data, bits) in vec.iter().rev() {
+        merged |= (data & ((1 << bits) - 1)) << total_bits;
+        total_bits += bits as usize;
     }
-    let total_bytes = total_bits / 8 + if total_bits % 8 > 0 { 1 } else { 0 };
-    let mut res = vec![0u8; total_bytes as usize];
-    for i in 0..total_bytes {
-        res[(total_bytes - 1 - i) as usize] = (merged & 0xFF) as u8;
-        merged = merged >> 8;
-    }
-    res
+
+    merged.to_be_bytes()[8 - (total_bits + 7) / 8..].to_vec()
 }
 
-fn unpack_data(vec: &Vec<u8>, bits: &Vec<u8>) -> Vec<(u64, u8)> {
-    let mut data = vec_to_u64(vec);
-    let len = bits.len();
-    let mut res = vec![(0u64, 0u8); len];
-    for i in 0..len {
-        let idx = len - 1 - i;
-        let t = data & ((1 << bits[idx]) - 1);
-        data = data >> bits[idx];
-        res[idx] = (t, bits[idx]);
+fn unpack_data(vec: &[u8], bits: &[u8]) -> Vec<(u64, u8)> {
+    let mut data = vec_to_u64(&vec.to_vec());
+    let mut res = Vec::new();
+
+    for &bit in bits.iter().rev() {
+        let mask = (1 << bit) - 1;
+        res.push(((data & mask) as u64, bit));
+        data >>= bit;
     }
-    res
+
+    res.into_iter().rev().collect()
 }
 
 #[cfg(test)]

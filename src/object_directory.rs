@@ -1,12 +1,15 @@
 use alloc::borrow::ToOwned;
+use alloc::string::ToString;
 
 use ini_core as ini;
 
 use crate::{info, util};
 use crate::data_type::DataType;
-use crate::error::{AbortCode, ErrorCode};
+use crate::error::ErrorCode;
+use crate::error::AbortCode::{AttemptToReadWriteOnlyObject, AttemptToWriteReadOnlyObject, DataTypeMismatchLengthTooHigh, DataTypeMismatchLengthTooLow, GeneralError, ObjectDoesNotExistInObjectDictionary, SubIndexDoesNotExist};
 use crate::error::ErrorCode::ProcesedSectionFailed;
 use crate::prelude::*;
+use crate::util::make_abort_error;
 use crate::value::{ByteConvertible, get_formatted_value_from_properties, Value};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -113,12 +116,12 @@ impl Array {
         add_member_to_container(&mut self.name_to_index, &mut self.index_to_variable, var);
     }
 
-    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, AbortCode> {
+    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, ErrorCode> {
         if self.index_to_variable.contains_key(&sub_index) {
             return self
                 .index_to_variable
                 .get_mut(&sub_index)
-                .ok_or(AbortCode::ObjectDoesNotExistInObjectDictionary);
+                .ok_or(make_abort_error(ObjectDoesNotExistInObjectDictionary, "".to_string()));
         }
 
         if 0 < sub_index && sub_index < 0xFF {
@@ -132,10 +135,10 @@ impl Array {
                 return self
                     .index_to_variable
                     .get_mut(&sub_index)
-                    .ok_or(AbortCode::ObjectDoesNotExistInObjectDictionary);
+                    .ok_or(make_abort_error(ObjectDoesNotExistInObjectDictionary, "".to_string()));
             }
         }
-        Err(AbortCode::ObjectDoesNotExistInObjectDictionary)
+        Err(make_abort_error(ObjectDoesNotExistInObjectDictionary, "".to_string()))
     }
 }
 
@@ -169,18 +172,18 @@ impl Record {
         add_member_to_container(&mut self.name_to_index, &mut self.index_to_variable, var);
     }
 
-    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, AbortCode> {
+    pub fn get_mut_variable(&mut self, sub_index: u8) -> Result<&mut Variable, ErrorCode> {
         self.index_to_variable
             .get_mut(&sub_index)
-            .ok_or(AbortCode::ObjectDoesNotExistInObjectDictionary)
+            .ok_or(make_abort_error(ObjectDoesNotExistInObjectDictionary, "".to_string()))
     }
 
-    pub fn get_variable_by_name(&self, name: &str) -> Result<&Variable, AbortCode> {
+    pub fn get_variable_by_name(&self, name: &str) -> Result<&Variable, ErrorCode> {
         if let Some(idx) = self.name_to_index.get(name) {
             let t = self.index_to_variable.get(idx);
-            t.ok_or(AbortCode::GeneralError)
+            t.ok_or(make_abort_error(GeneralError, "".to_string()))
         } else {
-            Err(AbortCode::GeneralError)
+            Err(make_abort_error(GeneralError, "".to_string()))
         }
     }
 }
@@ -268,21 +271,21 @@ impl ObjectDirectory {
     }
 
     pub fn set_value(&mut self, index: u16, sub_index: u8, data: &[u8], ignore_access_check: bool)
-        -> Result<&Variable, AbortCode> {
+        -> Result<&Variable, ErrorCode> {
         match self.get_mut_variable(index, sub_index) {
             Err(code) => Err(code),
             Ok(var) => {
                 if !ignore_access_check && !var.access_type.is_writable() {
-                    return Err(AbortCode::AttemptToWriteReadOnlyObject);
+                    return Err(make_abort_error(AttemptToWriteReadOnlyObject, "".to_string()));
                 }
 
                 if var.data_type.size() != data.len() {
                     info!("set_value() error: expect data_type size = {}, input data len = {}, data: {:?}",
                         var.data_type.size(), data.len(), data);
                     if var.data_type.size() > data.len() {
-                        return Err(AbortCode::DataTypeMismatchLengthTooLow);
+                        return Err(make_abort_error(DataTypeMismatchLengthTooLow, "".to_string()));
                     } else {
-                        return Err(AbortCode::DataTypeMismatchLengthTooHigh);
+                        return Err(make_abort_error(DataTypeMismatchLengthTooHigh, "".to_string()));
                     }
                 }
 
@@ -302,11 +305,11 @@ impl ObjectDirectory {
         }
     }
 
-    pub fn get_variable(&mut self, index: u16, sub_index: u8) -> Result<&Variable, AbortCode> {
+    pub fn get_variable(&mut self, index: u16, sub_index: u8) -> Result<&Variable, ErrorCode> {
         match self.get_mut_variable(index, sub_index) {
             Ok(var) => {
                 if !var.access_type.is_readable() {
-                    return Err(AbortCode::AttemptToReadWriteOnlyObject);
+                    return Err(make_abort_error(AttemptToReadWriteOnlyObject, "".to_string()));
                 }
                 // info!("xfguo: get var: {:?}", var);
                 Ok(var)
@@ -319,18 +322,18 @@ impl ObjectDirectory {
         &mut self,
         index: u16,
         sub_index: u8,
-    ) -> Result<&mut Variable, AbortCode> {
+    ) -> Result<&mut Variable, ErrorCode> {
         match self.index_to_object.get_mut(&index) {
             Some(ObjectType::Variable(var)) => {
                 if sub_index == 0 {
                     Ok(var)
                 } else {
-                    Err(AbortCode::SubIndexDoesNotExist)
+                    Err(make_abort_error(SubIndexDoesNotExist, "".to_string()))
                 }
             }
             Some(ObjectType::Array(arr)) => arr.get_mut_variable(sub_index),
             Some(ObjectType::Record(rec)) => rec.get_mut_variable(sub_index),
-            None => Err(AbortCode::ObjectDoesNotExistInObjectDictionary),
+            None => Err(make_abort_error(ObjectDoesNotExistInObjectDictionary, "".to_string())),
         }
     }
 

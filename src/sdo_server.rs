@@ -7,16 +7,17 @@ use crate::cmd_header::{
     SdoBlockDownloadInitiateCmd, SdoBlockUploadCmd, SdoDownloadInitiateCmd, SdoDownloadSegmentCmd,
     SdoEndBlockDownloadCmd, SdoInitBlockUploadCmd,
 };
-use crate::error::AbortCode;
+use crate::error::{AbortCode, ErrorCode};
 use crate::error;
 use crate::constant::{RESET_MAGIC_CODE, RESET_REGISTER_ID};
+use crate::error::AbortCode::{CommandSpecifierNotValidOrUnknown, DataTransferOrStoreFailed, GeneralError, InvalidBlockSize, ObjectCannotBeMappedToPDO, ToggleBitNotAlternated};
 use crate::node::Node;
 use crate::prelude::*;
 use crate::sdo_server::SdoState::{
     ConfirmUploadSdoBlock, DownloadSdoBlock, EndSdoBlockDownload, Normal, SdoSegmentDownload,
     SdoSegmentUpload, StartSdoBlockUpload,
 };
-use crate::util::{crc16_canopen_with_lut, flatten, create_frame_with_padding, convert_bytes_to_u32};
+use crate::util::{crc16_canopen_with_lut, flatten, create_frame_with_padding, convert_bytes_to_u32, make_abort_error};
 
 /// Represents the various states of the SDO (Service Data Object) communication process.
 /// These states govern the different phases or modes of SDO transmissions in a CANopen system.
@@ -44,23 +45,22 @@ pub enum SdoState {
 }
 
 impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
-    fn create_can_frame(&self, data: &[u8]) -> Result<CAN::Frame, AbortCode> {
+    fn create_can_frame(&self, data: &[u8]) -> Result<CAN::Frame, ErrorCode> {
         create_frame_with_padding(0x580 | self.node_id as u16, data).map_err(|ec| {
-            error!("Errors in creating CAN frame: {:x?}, error_code = {:?}", data, ec);
-            AbortCode::GeneralError
+            make_abort_error(AbortCode::GeneralError, format!("{:?}", ec))
         })
     }
 
-    pub(crate) fn create_sdo_frame(&self, cmd: u8, index: u16, sub_index: u8, data: &[u8]) -> Result<CAN::Frame, AbortCode> {
+    pub(crate) fn create_sdo_frame(&self, cmd: u8, index: u16, sub_index: u8, data: &[u8])
+        -> Result<CAN::Frame, ErrorCode> {
         let bytes = flatten(&[&[cmd], &index.to_le_bytes(), &sub_index.to_le_bytes(), data]);
         create_frame_with_padding(0x580 | self.node_id as u16, bytes.as_slice()).map_err(|ec| {
-            error!("Errors in creating SDO CAN frame: {:x?}, error_code = {:?}", data, ec);
-            AbortCode::GeneralError
+            make_abort_error(AbortCode::GeneralError, format!("{:?}", ec))
         })
     }
 
-    pub(crate) fn next_state(&mut self, state: SdoState, res: Result<CAN::Frame, AbortCode>)
-        -> Result<CAN::Frame, AbortCode> {
+    pub(crate) fn next_state(&mut self, state: SdoState, res: Result<CAN::Frame, ErrorCode>)
+        -> Result<CAN::Frame, ErrorCode> {
         self.sdo_state = state;
         res
     }
@@ -94,7 +94,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                     0x2 => self.initiate_upload(index, sub_index),
                     0x6 => self.init_block_download(index, sub_index, frame.data()),
                     0x5 => self.init_block_upload(index, sub_index, frame.data()),
-                    _ => Err(AbortCode::CommandSpecifierNotValidOrUnknown),
+                    _ => Err(make_abort_error(CommandSpecifierNotValidOrUnknown, "".to_string())),
                 }
             }
         };
@@ -103,7 +103,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             Ok(resp) => {
                 self.transmit(&resp);
             },
-            Err(code) => {
+            Err(ErrorCode::AbortCodeWrapper { abort_code, .. }) => {
                 let (idx, sidx) = match self.sdo_state {
                     Normal => (index, sub_index),
                     _ => (self.reserved_index, self.reserved_sub_index),
@@ -113,23 +113,26 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 self.write_buf = None;
                 self.need_crc = false;
 
-                match self.create_sdo_frame(0x80, idx, sidx, &code.code().to_le_bytes()) {
-                    Ok(errf) => { self.transmit(&errf) }
+                match self.create_sdo_frame(0x80, idx, sidx, &abort_code.code().to_le_bytes()) {
+                    Ok(err_frame) => { self.transmit(&err_frame) }
                     Err(_) => {
                         error!("Errors in creating SDO abort frame, index = {},\
-                         sub_index = {}, abort_code = {:x?}", idx, sidx, code);
+                         sub_index = {}, abort_code = {:x?}", idx, sidx, abort_code);
                     }
                 }
+            },
+            Err(err) => {
+                error!("Errors in processing SDO frame: {:x?}, err: {:?}", frame, err);
             }
         }
     }
 
-    fn initiate_upload(&mut self, index: u16, sub_index: u8) -> Result<CAN::Frame, AbortCode> {
+    fn initiate_upload(&mut self, index: u16, sub_index: u8) -> Result<CAN::Frame, ErrorCode> {
         let var = self.object_directory.get_variable(index, sub_index)?;
         let data = var.default_value().data();
 
         if data.is_empty() {
-            return Err(AbortCode::GeneralError);
+            return Err(make_abort_error(GeneralError, "".to_string()));
         }
 
         if data.len() <= 4 {
@@ -148,19 +151,19 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         self.next_state(SdoSegmentUpload, res)
     }
 
-    fn upload_segment(&mut self, cmd: u8) -> Result<CAN::Frame, AbortCode> {
+    fn upload_segment(&mut self, cmd: u8) -> Result<CAN::Frame, ErrorCode> {
         // Check if the command specifier is correct for an upload segment.
         if cmd >> 5 != 0x3 {
-            return Err(AbortCode::GeneralError);
+            return Err(make_abort_error(GeneralError, "".to_string()));
         }
 
         // Ensure the read buffer is available and has data to send.
-        let buffer = self.read_buf.as_mut().ok_or(AbortCode::GeneralError)?;
+        let buffer = self.read_buf.as_mut().ok_or(make_abort_error(GeneralError, "".to_string()))?;
         let toggle = (cmd >> 4) & 0x1;
 
         // Check the toggle bit for proper alternating value.
         if toggle != self.next_read_toggle {
-            return Err(AbortCode::ToggleBitNotAlternated);
+            return Err(make_abort_error(ToggleBitNotAlternated, "".to_string()));
         }
 
         // Prepare for the next toggle.
@@ -185,7 +188,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         }
     }
 
-    fn initiate_download(&mut self, index: u16, sub_index: u8, req: &[u8]) -> Result<CAN::Frame, AbortCode> {
+    fn initiate_download(&mut self, index: u16, sub_index: u8, req: &[u8]) -> Result<CAN::Frame, ErrorCode> {
         let cmd = SdoDownloadInitiateCmd::from(req[0]);
 
         // Check if the download is expedited.
@@ -213,13 +216,13 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         self.next_state(SdoSegmentDownload, response)
     }
 
-    fn download_segment(&mut self, req: &[u8]) -> Result<CAN::Frame, AbortCode> {
+    fn download_segment(&mut self, req: &[u8]) -> Result<CAN::Frame, ErrorCode> {
         let req_cmd = SdoDownloadSegmentCmd::from(req[0]);
         if req_cmd.ccs() != 0x0 {
-            return Err(AbortCode::GeneralError);
+            return Err(make_abort_error(GeneralError, "".to_string()));
         }
 
-        let mut buf = self.write_buf.take().ok_or(AbortCode::GeneralError)?;
+        let mut buf = self.write_buf.take().ok_or(make_abort_error(GeneralError, "".to_string()))?;
         let result = (|| {
             let resp_cmd = 0x20 | (req_cmd.t() << 4);
             if !req_cmd.c() {
@@ -230,7 +233,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 // Handle the final segment of the download.
                 buf.extend_from_slice(&req[1..(8 - req_cmd.n() as usize)]);
                 if self.write_data_size > 0 && self.write_data_size != buf.len() {
-                    return Err(AbortCode::GeneralError); // Size mismatch error.
+                    return Err(make_abort_error(GeneralError, "".to_string())); // Size mismatch error.
                 }
                 let (index, sub_index) = (self.reserved_index, self.reserved_sub_index);
                 self.set_value_with_check(index, sub_index, &buf)?;
@@ -243,7 +246,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         result
     }
 
-    fn init_block_download(&mut self, index: u16, sub_index: u8, req: &[u8]) -> Result<CAN::Frame, AbortCode> {
+    fn init_block_download(&mut self, index: u16, sub_index: u8, req: &[u8]) -> Result<CAN::Frame, ErrorCode> {
         let cmd = SdoBlockDownloadInitiateCmd::from(req[0]);
 
         // Update the flag for CRC need based on the command.
@@ -271,7 +274,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         self.next_state(DownloadSdoBlock, response)
     }
 
-    fn validate_pdo_mapping_params_on_setting(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), AbortCode> {
+    fn validate_pdo_mapping_params_on_setting(&mut self, index: u16, sub_index: u8, data: &[u8])
+        -> Result<(), ErrorCode> {
         // Early return if sub_index is not within valid PDO mapping range.
         if !(sub_index > 0 && sub_index <= crate::pdo::MAX_PDO_MAPPING_LENGTH) {
             return Ok(());
@@ -279,7 +283,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
         // Check data length is as expected for PDO mapping.
         if data.len() != 4 {
-            return Err(AbortCode::ObjectCannotBeMappedToPDO);
+            return Err(make_abort_error(ObjectCannotBeMappedToPDO, "".to_string()));
         }
 
         // Extract destination index and sub-index from data.
@@ -289,19 +293,19 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         // Retrieve variable and validate if it can be mapped to PDO.
         let var = self.object_directory.get_variable(dest_index, dest_sub_index)?;
         if !var.pdo_mappable() || (index < 0x1800 && !var.access_type().is_writable()) {
-            return Err(AbortCode::ObjectCannotBeMappedToPDO);
+            return Err(make_abort_error(ObjectCannotBeMappedToPDO, "".to_string()));
         }
 
         Ok(())
     }
 
-    fn try_reset(&mut self, sub_index: u8, data: &[u8]) -> Result<bool, AbortCode> {
+    fn try_reset(&mut self, sub_index: u8, data: &[u8]) -> Result<bool, ErrorCode> {
         let magic_code = u32::from_le_bytes(data[0..4].try_into().map_err(|_| {
             error!("Errors in converting data: {:x?}", data);
-            AbortCode::GeneralError
+            make_abort_error(GeneralError, "".to_string())
         })?);
         if magic_code != RESET_MAGIC_CODE {
-            return Err(AbortCode::DataTransferOrStoreFailed)
+            return Err(make_abort_error(DataTransferOrStoreFailed, "".to_string()))
         }
         let success = match sub_index {
             0x1 => self.reset(),
@@ -317,7 +321,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         Ok(true)
     }
 
-    fn set_value_preprocess(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<bool, AbortCode> {
+    fn set_value_preprocess(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<bool, ErrorCode> {
         match index {
             0x1600..=0x17FF | 0x1A00..=0x1BFF =>
                 self.validate_pdo_mapping_params_on_setting(index, sub_index, data).map(|_| false),
@@ -326,7 +330,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         }
     }
 
-    fn set_value_with_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), AbortCode> {
+    fn set_value_with_check(&mut self, index: u16, sub_index: u8, data: &[u8]) -> Result<(), ErrorCode> {
         if self.set_value_preprocess(index, sub_index, data)? {
             return Ok(())
         }
@@ -334,25 +338,25 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         match index {
             0x1400..=0x1BFF => {
                 let var_clone = var.clone();
-                self.update(&var_clone)
+                self.update(&var_clone)?;
             },
             0x1017 => {
                 let t: u16 = var.default_value().to();
                 self.heartbeats_timer = t as u32;
-                Ok(())
             }
-            _ => Ok(()),
+            _ => {}
         }
+        Ok(())
     }
 
-    fn block_download(&mut self, req: &[u8]) -> Result<CAN::Frame, AbortCode> {
+    fn block_download(&mut self, req: &[u8]) -> Result<CAN::Frame, ErrorCode> {
         let seqno = req[0] & 0x7F;
         self.current_seq_number += 1;
         if seqno != self.current_seq_number {
-            return Err(AbortCode::GeneralError);
+            return Err(make_abort_error(GeneralError, "".to_string()));
         }
 
-        let mut buf = self.write_buf.take().ok_or(AbortCode::GeneralError)?;
+        let mut buf = self.write_buf.take().ok_or(make_abort_error(GeneralError, "".to_string()))?;
         buf.extend_from_slice(&req[1..]);
 
         let result = (|| {
@@ -377,10 +381,10 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         result
     }
 
-    fn end_block_download(&self, req: &[u8]) -> Result<CAN::Frame, AbortCode> {
+    fn end_block_download(&self, req: &[u8]) -> Result<CAN::Frame, ErrorCode> {
         let cmd = SdoEndBlockDownloadCmd::from(req[0]);
         if cmd.n() as usize != 7 - self.write_data_size % 7 {
-            return Err(AbortCode::GeneralError);
+            return Err(make_abort_error(GeneralError, "".to_string()));
         }
         // TODO(zephyr): CRC check.
         let _crc = u16::from_le_bytes([req[1], req[2]]);
@@ -389,15 +393,15 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     }
 
     fn init_block_upload(&mut self, index: u16, sub_index: u8, req: &[u8])
-        -> Result<CAN::Frame, AbortCode> {
+        -> Result<CAN::Frame, ErrorCode> {
         let cmd = SdoInitBlockUploadCmd::from(req[0]);
         let (blk_size, _pst) = (req[4], req[5]);
 
         if cmd.ccs() != 0x5 || cmd.cs() != 0 {
-            return Err(AbortCode::GeneralError);
+            return Err(make_abort_error(GeneralError, "".to_string()));
         }
         if blk_size >= 0x80 {
-            return Err(AbortCode::InvalidBlockSize);
+            return Err(make_abort_error(InvalidBlockSize, "".to_string()));
         }
 
         // Init setting for upload (read)
@@ -411,15 +415,17 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
         // Prepare the response packet.
         let resp_cmd = 0xC2 | (self.crc_enabled as u8) << 2;
-        let v: [u8; 4] = (self.read_buf.as_ref().ok_or(AbortCode::GeneralError)?.len() as u32).to_le_bytes();
+        let v: [u8; 4] = (self.read_buf.as_ref()
+            .ok_or(make_abort_error(GeneralError, "".to_string()))?.len() as u32)
+            .to_le_bytes();
         let res = self.create_sdo_frame(resp_cmd, index, sub_index, &v.to_vec());
         self.next_state(StartSdoBlockUpload, res)
     }
 
-    fn start_block_upload(&mut self, req: &[u8]) -> Result<CAN::Frame, AbortCode> {
+    fn start_block_upload(&mut self, req: &[u8]) -> Result<CAN::Frame, ErrorCode> {
         let cmd = SdoBlockUploadCmd::from(req[0]);
         if cmd.ccs() != 0x5 || cmd.cs() != 0x3 {
-            return Err(AbortCode::GeneralError);
+            return Err(make_abort_error(GeneralError, "".to_string()));
         }
 
         // TODO(zephyr): Some additional scenarios that need consideration:
@@ -428,8 +434,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         // - Logic for retransmission based on ack seq. (This also needs to be
         //   considered for download)
 
-        let buf = self.read_buf.take().ok_or(AbortCode::GeneralError)?;
-        let result = (|| -> Result<CAN::Frame, AbortCode> {
+        let buf = self.read_buf.take().ok_or(make_abort_error(GeneralError, "".to_string()))?;
+        let result = (|| -> Result<CAN::Frame, ErrorCode> {
             let total_seqs = ((buf.len() - 1) / 7 + 1) as u8;
             for i in 0..total_seqs - 1 {
                 // This is a special case, directly transmit (total_seq - 1) frames,
@@ -437,11 +443,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 let (s, e) = ((i * 7) as usize, (i * 7 + 7) as usize);
                 // TODO(zephyr): replace 0x580 with a const.
                 let bytes = [&[i+1], &buf[s..e]].concat();
-                let frame = create_frame_with_padding(0x580 | self.node_id as u16, &bytes)
-                    .map_err(|err_code| {
-                        error!("Errors in creating frame, error_code = {:?}, bytes = {:x?}", err_code, bytes);
-                        AbortCode::GeneralError
-                    })?;
+                let frame = create_frame_with_padding(0x580 | self.node_id as u16, &bytes)?;
                 self.transmit(&frame);
             }
             let s = ((total_seqs - 1) * 7) as usize;
@@ -452,15 +454,15 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         self.next_state(ConfirmUploadSdoBlock, result)
     }
 
-    fn confirm_block_upload(&mut self, req: &[u8]) -> Result<CAN::Frame, AbortCode> {
+    fn confirm_block_upload(&mut self, req: &[u8]) -> Result<CAN::Frame, ErrorCode> {
         let cmd = SdoBlockUploadCmd::from(req[0]);
         if cmd.ccs() != 0x5 || cmd.cs() != 2 {
-            return Err(AbortCode::GeneralError);
+            return Err(make_abort_error(GeneralError, "".to_string()));
         }
-        let buf = self.read_buf.as_ref().ok_or(AbortCode::GeneralError)?;
+        let buf = self.read_buf.as_ref().ok_or(make_abort_error(GeneralError, "".to_string()))?;
         let (ackseq, blksize) = (req[1], req[2]);
         if ackseq as usize != (buf.len() - 1) / 7 + 1 {
-            return Err(AbortCode::CommandSpecifierNotValidOrUnknown);
+            return Err(make_abort_error(CommandSpecifierNotValidOrUnknown, "".to_string()));
         }
 
         self.block_size = blksize;

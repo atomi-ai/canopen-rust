@@ -4,6 +4,7 @@ use core::str::FromStr;
 use embedded_can::{Frame, Id, StandardId};
 
 use crate::error::{AbortCode, ErrorCode};
+use crate::error::AbortCode::GeneralError;
 use crate::prelude::*;
 
 pub trait ParseRadix: FromStr {
@@ -118,6 +119,14 @@ pub fn u64_to_vec(data: u64, bytes: usize) -> Vec<u8> {
     data.to_be_bytes()[8 - min(bytes, 8)..].to_vec()
 }
 
+pub(crate) fn vec_to_u64(v: &Vec<u8>) -> u64 {
+    let mut res = 0u64;
+    for &x in v.iter().take(8) {
+        res = (res << 8) | (x as u64);
+    }
+    res
+}
+
 pub fn create_frame_with_padding<F: Frame + Debug>(cob_id: u16, data: &[u8])
     -> Result<F, ErrorCode> {
     let mut packet = Vec::from(&data[..data.len().min(8)]);
@@ -132,10 +141,10 @@ pub fn create_frame<F: Frame + Debug>(cob_id: u16, data: &[u8]) -> Result<F, Err
         .ok_or(ErrorCode::FrameCreationFailed{data: data.to_vec()})
 }
 
-pub fn convert_bytes_to_u32(data: &[u8]) -> Result<u32, AbortCode> {
+pub fn convert_bytes_to_u32(data: &[u8]) -> Result<u32, ErrorCode> {
     match data.try_into() {
         Ok(arr) => Ok(u32::from_le_bytes(arr)),
-        Err(_) => Err(AbortCode::GeneralError),
+        Err(_) => Err(make_abort_error(GeneralError, "".to_string())),
     }
 }
 
@@ -175,10 +184,10 @@ pub fn crc16_canopen_with_lut(bytes: &[u8]) -> u16 {
     crc
 }
 
-pub fn make_abort_error(abort_code: AbortCode, more_info: &str) -> ErrorCode {
+pub fn make_abort_error(abort_code: AbortCode, more_info: String) -> ErrorCode {
     ErrorCode::AbortCodeWrapper {
         abort_code,
-        more_info: more_info.to_string(),
+        more_info,
     }
 }
 
@@ -188,7 +197,7 @@ mod util_tests {
     use alloc::vec::Vec;
     use core::fmt::{Debug, Formatter};
     use embedded_can::{Frame, Id};
-    use crate::util::{create_frame, parse_number, ErrorCode};
+    use super::{create_frame, parse_number, ErrorCode, vec_to_u64};
     use super::u64_to_vec;
 
     struct MockFrame {
@@ -289,6 +298,38 @@ mod util_tests {
     fn test_special_values() {
         assert_eq!(u64_to_vec(0, 8), vec![0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(u64_to_vec(u64::MAX, 8), vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn test_empty_vector() {
+        assert_eq!(vec_to_u64(&vec![]), 0);
+    }
+
+    #[test]
+    fn test_full_length_vector() {
+        assert_eq!(vec_to_u64(&vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]),
+                   0x0102030405060708);
+    }
+
+    #[test]
+    fn test_partial_length_vector() {
+        assert_eq!(vec_to_u64(&vec![0x01, 0x02, 0x03]), 0x010203);
+    }
+
+    #[test]
+    fn test_max_value_vector() {
+        assert_eq!(vec_to_u64(&vec![0xFF; 8]), 0xFFFFFFFFFFFFFFFF);
+    }
+
+    #[test]
+    fn test_single_element_vector() {
+        assert_eq!(vec_to_u64(&vec![0x01]), 0x01);
+    }
+
+    #[test]
+    fn test_long_vector() {
+        assert_eq!(vec_to_u64(&vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A]),
+                   0x0102030405060708);
     }
 
     #[test]

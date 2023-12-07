@@ -7,7 +7,7 @@ use crate::pdo::PdoObjects;
 use crate::prelude::*;
 use crate::sdo_server::SdoState;
 use crate::sdo_server::SdoState::Normal;
-use crate::util::{create_frame, get_cob_id, make_abort_error};
+use crate::util::{create_frame, get_cob_id};
 use crate::{error, info};
 use crate::error::ErrorCode;
 
@@ -121,8 +121,8 @@ impl<CAN> Node<CAN> where CAN: Can, CAN::Frame: Frame + Debug {
         Ok(node)
     }
 
-    pub fn pdo_objects(&self) -> &PdoObjects {
-        &self.pdo_objects
+    pub fn pdo_objects(&mut self) -> &mut PdoObjects {
+        &mut self.pdo_objects
     }
 }
 
@@ -140,18 +140,12 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                             match self.object_directory.get_variable(idx, k) {
                                 Ok(sub_var) => {
                                     let sub_var_clone = sub_var.clone();
-                                    self.update(&sub_var_clone).map_err(|abort_code| {
-                                        make_abort_error(abort_code, format!(
-                                            "Errors in updating sub variable: {:x?}", sub_var_clone).as_str())
-                                    })?;
+                                    self.update(&sub_var_clone)?;
                                 }
                                 Err(_) => {}
                             }
                         };
-                        self.update(&var_clone).map_err(|abort_code| {
-                            make_abort_error(abort_code, format!(
-                                "Errors in updating variable: {:x?}", var_clone).as_str())
-                        })?;
+                        self.update(&var_clone)?;
                     }
                     Err(_) => {}
                 };
@@ -163,8 +157,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                     match self.object_directory.get_variable(idx, k) {
                         Ok(var) => {
                             let var_clone = var.clone();
-                            self.update(&var_clone).map_err(|code| make_abort_error(
-                                code, format!("Get {:?} in update var: {:x?}", code, var_clone).as_str()))?;
+                            self.update(&var_clone)?;
                             if k == 0 { len = var_clone.default_value().to(); }
                         }
                         _ => {}
@@ -266,26 +259,22 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         }
     }
 
-    // TODO(zephyr): return type to "Result<Option<CAN::Frame>, OurErr>"
-    // Reorg our errors instead of String.
     fn process_rpdo_frame(&mut self, frame: &CAN::Frame) {
-        if let Some(cob_id) = get_cob_id(frame) {
-            if let Some(&index) = self.pdo_objects.get_rpdo_index(cob_id) {
-                let rpdo = &mut self.pdo_objects.get_mut_rpdo(index);
-                if frame.data().len() != ((rpdo.total_length() + 7) / 8) as usize {
-                    // trigger emergency
-                    let bytes = cob_id.to_le_bytes();
-                    match self.trigger_emergency(
-                        EmergencyErrorCode::PdoNotProcessed, ErrorRegister::GenericError, &bytes) {
-                        Ok(_) => {}
-                        Err(err_code) => {
-                            error!("Errors in generating PdoNotProcessed EMCY frame,\
-                             cod_id = {}, error_code = {:?}", cob_id, err_code);
-                        }
-                    }
-                    return
-                }
-                rpdo.set_cached_data(frame.data());
+        let result = (|frame: &CAN::Frame| -> Result<(), ErrorCode>{
+            let cob_id = get_cob_id(frame).ok_or(ErrorCode::NoCobIdInFrame)?;
+            let rpdo = self.pdo_objects.get_mut_rpdo_with_cob_id(cob_id)?;
+            if frame.data().len() != ((rpdo.total_length() + 7) / 8) as usize {
+                // trigger emergency
+                let bytes = cob_id.to_le_bytes();
+                return self.trigger_emergency(
+                    EmergencyErrorCode::PdoNotProcessed, ErrorRegister::GenericError, &bytes)
+            }
+            Ok(rpdo.set_cached_data(frame.data()))
+        })(frame);
+        match result {
+            Ok(_) => {}
+            Err(ec) => {
+                error!("Errors in processing a RPDO frame: {:x?}, err: {:x?}", frame, ec);
             }
         }
     }
@@ -329,6 +318,13 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         }
     }
 
+    fn call_tpdo(&mut self, is_sync: bool, event: NodeEvent, count: u32) {
+        match self.transmit_pdo_messages(is_sync, event, count) {
+            Ok(_) => {}
+            Err(err) => { error!("Errors in transmit PDO message: {:x?}", err); }
+        }
+    }
+
     pub fn trigger_event(&mut self, event: NodeEvent) {
         match event {
             NodeEvent::NodeStart => {
@@ -336,7 +332,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 self.sync_count = 0;
                 self.error_count = 0;
                 self.heartbeats = 0;
-                self.transmit_pdo_messages(false, event, self.event_count);
+                self.call_tpdo(false, event, self.event_count);
             }
             _ => {}
         }
@@ -346,7 +342,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         if self.state == NodeState::Operational {
             self.sync_count += 1;
             self.save_rpdo_messages(true, NodeEvent::Unused, self.sync_count);
-            self.transmit_pdo_messages(true, NodeEvent::Unused, self.sync_count);
+            self.call_tpdo(true, NodeEvent::Unused, self.sync_count);
         }
     }
 
@@ -367,7 +363,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         if self.state == NodeState::Operational {
             self.event_count += 1;
             self.save_rpdo_messages(false, NodeEvent::RegularTimerEvent, self.event_count);
-            self.transmit_pdo_messages(false, NodeEvent::RegularTimerEvent, self.event_count);
+            self.call_tpdo(false, NodeEvent::RegularTimerEvent, self.event_count);
         }
     }
 }
