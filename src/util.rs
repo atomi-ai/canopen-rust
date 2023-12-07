@@ -72,7 +72,7 @@ pub fn get_cob_id<F: Frame>(frame: &F) -> Option<u16> {
 }
 
 fn is_hex_char(c: char) -> bool {
-    ('0'..='9').contains(&c) || ('a'..='f').contains(&c) || ('A'..='F').contains(&c)
+    c.is_ascii_digit() || ('a'..='f').contains(&c) || ('A'..='F').contains(&c)
 }
 
 pub fn is_top(s: &str) -> bool {
@@ -119,7 +119,7 @@ pub fn u64_to_vec(data: u64, bytes: usize) -> Vec<u8> {
     data.to_be_bytes()[8 - min(bytes, 8)..].to_vec()
 }
 
-pub(crate) fn vec_to_u64(v: &Vec<u8>) -> u64 {
+pub(crate) fn vec_to_u64(v: &[u8]) -> u64 {
     let mut res = 0u64;
     for &x in v.iter().take(8) {
         res = (res << 8) | (x as u64);

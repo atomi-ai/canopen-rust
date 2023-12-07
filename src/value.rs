@@ -13,10 +13,6 @@ impl Value {
         Self { data }
     }
 
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
     pub fn as_slice(&self) -> &[u8] {
         &self.data
     }
@@ -72,7 +68,7 @@ impl_byte_convertible_for_int!(f64, 8);
 
 impl ByteConvertible for String {
     fn from_bytes(bytes: &[u8]) -> Self {
-        String::from_utf8(bytes.to_vec()).unwrap_or(String::new())
+        String::from_utf8(bytes.to_vec()).unwrap_or_default()
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -100,13 +96,13 @@ fn make_error(data_type: DataType, data_string: &str) -> ErrorCode {
 
 fn string_to_value(data_type: &DataType, data_string: &str) -> Result<Value, ErrorCode> {
     match data_type {
-        DataType::Unknown => Err(make_error(data_type.clone(), data_string)),
+        DataType::Unknown => Err(make_error(*data_type, data_string)),
 
         DataType::Boolean => {
             let val: u8 = match data_string.to_lowercase().as_str() {
                 "true" | "1" => 1,
                 "false" | "0" => 0,
-                _ => return Err(make_error(data_type.clone(), data_string)),
+                _ => return Err(make_error(*data_type, data_string)),
             };
             Ok(Value::new(val.to_bytes()))
         }
@@ -153,13 +149,13 @@ fn string_to_value(data_type: &DataType, data_string: &str) -> Result<Value, Err
 
         DataType::Real32 => {
             let val: f32 = data_string.parse().map_err(
-                |_| make_error(data_type.clone(), data_string))?;
+                |_| make_error(*data_type, data_string))?;
             Ok(Value::new(val.to_bytes()))
         }
 
         DataType::Real64 => {
             let val: f64 = data_string.parse().map_err(
-                |_| make_error(data_type.clone(), data_string))?;
+                |_| make_error(*data_type, data_string))?;
             Ok(Value::new(val.to_bytes()))
         }
 
@@ -170,7 +166,7 @@ fn string_to_value(data_type: &DataType, data_string: &str) -> Result<Value, Err
         DataType::Domain => {
             let val: i32 = data_string
                 .parse()
-                .map_err(|_| make_error(data_type.clone(), data_string))?;
+                .map_err(|_| make_error(*data_type, data_string))?;
             Ok(Value::new(val.to_bytes()))
         }
     }

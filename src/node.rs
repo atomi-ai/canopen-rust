@@ -132,35 +132,26 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             for j in 0..4 {
                 let idx = i + j;
 
-                match self.object_directory.get_variable(idx, 0) {
-                    Ok(var) => {
-                        let var_clone = var.clone();
-                        let len: u8 = var_clone.default_value().to();
-                        for k in 1..=len {
-                            match self.object_directory.get_variable(idx, k) {
-                                Ok(sub_var) => {
-                                    let sub_var_clone = sub_var.clone();
-                                    self.update(&sub_var_clone)?;
-                                }
-                                Err(_) => {}
-                            }
-                        };
-                        self.update(&var_clone)?;
-                    }
-                    Err(_) => {}
+                if let Ok(var) = self.object_directory.get_variable(idx, 0) {
+                    let var_clone = var.clone();
+                    let len: u8 = var_clone.default_value().to();
+                    for k in 1..=len {
+                        if let Ok(sub_var) = self.object_directory.get_variable(idx, k) {
+                            let sub_var_clone = sub_var.clone();
+                            self.update(&sub_var_clone)?;
+                        }
+                    };
+                    self.update(&var_clone)?;
                 };
 
                 let mut len = 0u8;
                 let mut k = 0u8;
 
                 while k <= len {
-                    match self.object_directory.get_variable(idx, k) {
-                        Ok(var) => {
-                            let var_clone = var.clone();
-                            self.update(&var_clone)?;
-                            if k == 0 { len = var_clone.default_value().to(); }
-                        }
-                        _ => {}
+                    if let Ok(var) = self.object_directory.get_variable(idx, k) {
+                        let var_clone = var.clone();
+                        self.update(&var_clone)?;
+                        if k == 0 { len = var_clone.default_value().to(); }
                     }
                     k += 1;
                 }
@@ -228,7 +219,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         }
         let (cs, nid) = (frame.data()[0], frame.data()[1]);
         info!("process_nmt_frame 1: cs = {:#x}, nid = {}", cs, nid);
-        if nid != self.node_id as u8 {
+        if nid != self.node_id {
             return;
         }
         match cs {
@@ -269,7 +260,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 return self.trigger_emergency(
                     EmergencyErrorCode::PdoNotProcessed, ErrorRegister::GenericError, &bytes)
             }
-            Ok(rpdo.set_cached_data(frame.data()))
+            rpdo.set_cached_data(frame.data());
+            Ok(())
         })(frame);
         match result {
             Ok(_) => {}
@@ -280,7 +272,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     }
 
     pub fn transmit(&mut self, frame: &CAN::Frame) {
-        match self.can_network.transmit(&frame) {
+        match self.can_network.transmit(frame) {
             Ok(_) => {
                 info!("Sent frame {:x?}", frame);
             }
@@ -293,7 +285,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     pub fn init(&mut self) -> Result<(), ErrorCode> {
         // TODO(zephyr): this is informal, let's figure out a formal way later or just remove this.
         let ready_frame = create_frame(0x234, &[1, 2, 3, 5])?;
-        Ok(self.transmit(&ready_frame))
+        self.transmit(&ready_frame);
+        Ok(())
     }
 
     // Need to be non-blocking.
@@ -326,15 +319,12 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     }
 
     pub fn trigger_event(&mut self, event: NodeEvent) {
-        match event {
-            NodeEvent::NodeStart => {
-                self.event_count = 0;
-                self.sync_count = 0;
-                self.error_count = 0;
-                self.heartbeats = 0;
-                self.call_tpdo(false, event, self.event_count);
-            }
-            _ => {}
+        if event == NodeEvent::NodeStart {
+            self.event_count = 0;
+            self.sync_count = 0;
+            self.error_count = 0;
+            self.heartbeats = 0;
+            self.call_tpdo(false, event, self.event_count);
         }
     }
 

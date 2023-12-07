@@ -13,6 +13,7 @@ pub enum ErrorCode {
     ProcesedSectionFailed { section_name: String, more_info: String },
     AbortCodeWrapper { abort_code: AbortCode, more_info: String },
     NoPdoObjectInIndex { index: usize },
+    VariableNotFound {index: u16, sub_index: u8},
     LegacyError { str: String },
 }
 
@@ -33,6 +34,7 @@ impl Debug for ErrorCode {
             ErrorCode::NoCobIdInFrame => write!(f, "No cob id"),
             ErrorCode::NoCobIdInRpdo { cob_id } => write!(f, "No cob id ({:x?}) in Rpdo", cob_id),
             ErrorCode::NoPdoObjectInIndex { index } => write!(f, "No index({}) in pdo object", index),
+            ErrorCode::VariableNotFound { index, sub_index } => write!(f, "Not variable on ({:x?}, {:x?}", index, sub_index),
         }
     }
 }

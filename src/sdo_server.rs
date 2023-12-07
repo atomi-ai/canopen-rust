@@ -369,7 +369,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
                 // Write data to object directory.
                 let (i, si) = (self.reserved_index, self.reserved_sub_index);
-                self.set_value_with_check(i, si, &buf.as_slice())?;
+                self.set_value_with_check(i, si, &buf)?;
 
                 let (c, b) = (self.current_seq_number, self.block_size);
                 self.next_state(EndSdoBlockDownload, self.create_can_frame(&[0xA2, c, b]))
@@ -418,7 +418,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
         let v: [u8; 4] = (self.read_buf.as_ref()
             .ok_or(make_abort_error(GeneralError, "".to_string()))?.len() as u32)
             .to_le_bytes();
-        let res = self.create_sdo_frame(resp_cmd, index, sub_index, &v.to_vec());
+        let res = self.create_sdo_frame(resp_cmd, index, sub_index, &v);
         self.next_state(StartSdoBlockUpload, res)
     }
 

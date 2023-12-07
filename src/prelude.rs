@@ -22,7 +22,6 @@ mod no_std_items {
     pub use alloc::string::{String, ToString};
     pub use alloc::vec;
     pub use alloc::vec::Vec;
-    pub use core::fmt::Error;
     pub use core::*;
     pub use hashbrown::HashMap;
     // pub fn sleep(_ms: u64) {}

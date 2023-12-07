@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 
 use crate::error::{AbortCode, ErrorCode};
 use crate::info;
-use crate::error::AbortCode::{ExceedPDOSize, GeneralError};
+use crate::error::AbortCode::ExceedPDOSize;
 use crate::node::{Node, NodeEvent};
 use crate::object_directory::Variable;
 use crate::util::{create_frame, make_abort_error, vec_to_u64};
@@ -116,6 +116,12 @@ pub struct PdoObjects {
     cob_to_index: HashMap<u16, usize>,
 }
 
+impl Default for PdoObjects {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PdoObjects {
     pub fn new() -> Self {
         let default_pdo = PdoObject {
@@ -150,14 +156,12 @@ fn should_trigger_pdo(is_sync: bool, event: NodeEvent, transmission_type: u32, e
             return false;
         }
     } else {
-        match event {
-            NodeEvent::NodeStart => { return true; }
-            _ => {}
-        }
+        if event == NodeEvent::NodeStart { return true; }
         if transmission_type != 0xFE && transmission_type != 0xFF {
             // info!("xfguo: transmit_pdo_messages 1.1.2, count = {}, tt = {}", count, transmission_type);
             return false;
-        } else if event_times == 0 || count % event_times != 0 {
+        }
+        if event_times == 0 || count % event_times != 0 {
             // info!("xfguo: transmit_pdo_messages 1.1.3, count = {}, event_timer = {}", count, event_times);
             return false;
         }
@@ -217,7 +221,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
     pub(crate) fn update(&mut self, var: &Variable) -> Result<(), ErrorCode> {
         let (pdo_type, pdo_index) = (var.index() >> 8, (var.index() & 0xF) as usize);
-        if pdo_type < 0x14 || pdo_type >= 0x1C {
+        if !(0x14..0x1C).contains(&pdo_type) {
             return Ok(());
         }
         let index = pdo_index + (pdo_type >= 0x18) as usize * 4;
@@ -257,10 +261,10 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
                 // info!("xfguo: transmit_pdo_messages 2, count = {}, pdo[{}] = {:#x?}", count, i, pdo);
                 // Emit a TPDO message.
-                let frame = self.gen_pdo_frame(
-                    pdo.cob_id as u16, pdo.num_of_map_objs,
-                    (&pdo.mappings[0..pdo.num_of_map_objs as usize]).to_vec())?;
-                Ok(self.transmit(&frame))
+                let mappings = pdo.mappings[..pdo.num_of_map_objs as usize].to_vec();
+                let frame = self.gen_pdo_frame(pdo.cob_id, pdo.num_of_map_objs, mappings)?;
+                self.transmit(&frame);
+                Ok(())
             })();
             self.pdo_objects.pdos[index] = Some(pdo);
             result?
@@ -270,21 +274,16 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
 
     pub(crate) fn gen_pdo_frame(&mut self, cob_id: u16, num_of_map_objs: u8, mappings: Vec<(u16, u8, u8)>)
                                 -> Result<CAN::Frame, ErrorCode> {
-        // TODO(zephyr): Reorg code below, use pdo.cached_data.
-        let mut t = Vec::new();
-        // info!("xfguo: gen_pdo_frame() 0, {}, {:#x?}", num_of_map_objs, mappings);
-        for i in 0..num_of_map_objs {
-            let (idx, sub_idx, bits) = mappings[i as usize];
-            match self.object_directory.get_variable(idx, sub_idx) {
-                Ok(v) => {
-                    t.push((vec_to_u64(&v.default_value().data()), bits));
-                    // info!("xfguo: gen_pdo_frame() 2.2.1, {:#x?}:{:#x?} => {:#x?}, t = {:#x?}",
-                    //     idx, sub_idx, v, t);
-                }
-                Err(_) => return Err(make_abort_error(GeneralError, "".to_string())),
-            }
+        let mut data_pairs = Vec::new();
+        for (idx, sub_idx, bits) in mappings.iter().take(num_of_map_objs as usize) {
+            let variable = self.object_directory.get_variable(*idx, *sub_idx)
+                .map_err(|_| ErrorCode::VariableNotFound { index: *idx, sub_index: *sub_idx })?;
+
+            let data = vec_to_u64(variable.default_value().data());
+            data_pairs.push((data, *bits));
         }
-        let packet = pack_data(&t);
+
+        let packet = pack_data(&data_pairs);
         create_frame(cob_id, &packet)
     }
 }
@@ -302,12 +301,12 @@ fn pack_data(vec: &[(u64, u8)]) -> Vec<u8> {
 }
 
 fn unpack_data(vec: &[u8], bits: &[u8]) -> Vec<(u64, u8)> {
-    let mut data = vec_to_u64(&vec.to_vec());
+    let mut data = vec_to_u64(vec);
     let mut res = Vec::new();
 
     for &bit in bits.iter().rev() {
         let mask = (1 << bit) - 1;
-        res.push(((data & mask) as u64, bit));
+        res.push(((data & mask), bit));
         data >>= bit;
     }
 

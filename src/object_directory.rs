@@ -1,5 +1,6 @@
 use alloc::borrow::ToOwned;
 use alloc::string::ToString;
+use core::str::FromStr;
 
 use ini_core as ini;
 
@@ -18,20 +19,24 @@ pub struct AccessType {
     write_access: bool,
 }
 
-impl AccessType {
-    pub fn new(read: bool, write: bool) -> Self {
-        AccessType {
-            read_access: read,
-            write_access: write,
-        }
-    }
+impl FromStr for AccessType {
+    type Err = ErrorCode;
 
-    pub fn from_str(s: &str) -> Result<Self, ErrorCode> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "rw" => Ok(AccessType::new(true, true)),
             "ro" => Ok(AccessType::new(true, false)),
             "wo" => Ok(AccessType::new(false, true)),
             _ => Ok(AccessType::new(false, false)),
+        }
+    }
+}
+
+impl AccessType {
+    pub fn new(read: bool, write: bool) -> Self {
+        AccessType {
+            read_access: read,
+            write_access: write,
         }
     }
 
@@ -248,9 +253,9 @@ impl ObjectDirectory {
     pub fn add_sub_member(&mut self, index: u16, var: Variable) -> Result<(), String> {
         match self.index_to_object.get_mut(&index) {
             None => { Err(format!("No id:{:x?}", index)) }
-            Some(ObjectType::Record(record)) => { Ok(record.add_member(var)) }
-            Some(ObjectType::Array(array)) => { Ok(array.add_member(var)) }
-            _ => { Err(format!("no subindex for a Variable object")) }
+            Some(ObjectType::Record(record)) => { record.add_member(var); Ok(()) }
+            Some(ObjectType::Array(array)) => { array.add_member(var); Ok(()) }
+            _ => { Err("no subindex for a Variable object".to_string()) }
         }
     }
 
@@ -363,7 +368,7 @@ impl ObjectDirectory {
             match ot {
                 7 => {
                     let variable =
-                        build_variable(properties, self.node_id, name, index as u16, None)?;
+                        build_variable(properties, self.node_id, name, index, None)?;
                     self.name_to_index.insert(variable.name.clone(), index);
                     self.index_to_object
                         .insert(index, ObjectType::Variable(variable));
@@ -428,8 +433,8 @@ impl ObjectDirectory {
             // Logic related to CompactSubObj
             let t = properties.get("NrOfEntries").ok_or_else(
                 || make_section_error(section_name, "No NrOfEntries"))?;
-            let num_of_entries = t.parse().or_else(|err| Err(make_section_error(
-                section_name, format!("parsing '{}' error: {:?}", t, err).as_str())))?;
+            let num_of_entries = t.parse().map_err(|err| make_section_error(
+                section_name, format!("parsing '{}' error: {:?}", t, err).as_str()))?;
             if let Some(ObjectType::Array(arr)) = self.index_to_object.get_mut(&index) {
                 if let Some(src_var) = arr.index_to_variable.get(&1u8) {
                     let cloned_src_var = src_var.clone();
@@ -493,7 +498,7 @@ fn make_section_error(section_name: &str, more_info: &str) -> ErrorCode {
 fn build_variable(
     properties: &HashMap<String, String>,
     node_id: u8,
-    name: &String,
+    name: &str,
     index: u16,
     sub_index: Option<u8>,
 ) -> Result<Variable, ErrorCode> {
@@ -502,7 +507,7 @@ fn build_variable(
         .unwrap_or(&String::from(""))
         .clone();
     let access_type = AccessType::from_str(
-        &*properties
+        &properties
             .get("AccessType")
             .unwrap_or(&String::from("rw"))
             .to_lowercase(),
@@ -521,16 +526,16 @@ fn build_variable(
     );
     let dt = DataType::from_u32(dt_val);
 
-    let min = get_formatted_value_from_properties(&properties, "LowLimit", node_id, &dt);
-    let max = get_formatted_value_from_properties(&properties, "HighLimit", node_id, &dt);
+    let min = get_formatted_value_from_properties(properties, "LowLimit", node_id, &dt);
+    let max = get_formatted_value_from_properties(properties, "HighLimit", node_id, &dt);
 
     let default_value = get_formatted_value_from_properties(
-        &properties, "DefaultValue", node_id, &dt).unwrap_or(Value::new(dt.default_value()));
+        properties, "DefaultValue", node_id, &dt).unwrap_or(Value::new(dt.default_value()));
     let parameter_value = get_formatted_value_from_properties(
-        &properties, "ParameterValue", node_id, &dt);
+        properties, "ParameterValue", node_id, &dt);
 
     let variable = Variable {
-        name: name.clone(),
+        name: name.to_owned(),
         storage_location,
         data_type: dt,
         access_type,
