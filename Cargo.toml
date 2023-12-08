@@ -1,5 +1,5 @@
 [package]
-name = "canopen"
+name = "canopen_rust"
 version = "0.1.0"
 authors = ["Zephyr Guo <zephyr@atomi.ai>"]
 edition = "2021"
