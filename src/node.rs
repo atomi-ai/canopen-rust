@@ -312,7 +312,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 return;
             }
         };
-        info!("got frame: {:?}", frame);
+        info!("got frame: {:x?}", frame);
         if let Some(cob_id) = get_cob_id(&frame) {
             match cob_id & COB_FUNC_MASK {
                 COB_FUNC_NMT => self.process_nmt_frame(&frame),
