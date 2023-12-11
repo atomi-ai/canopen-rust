@@ -1,6 +1,6 @@
 [package]
 name = "canopen_rust"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Zephyr Guo <zephyr@atomi.ai>"]
 edition = "2021"
 license = "Apache-2.0"
