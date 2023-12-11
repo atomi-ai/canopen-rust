@@ -6,9 +6,10 @@ use core::fmt::Debug;
 use embedded_can::Frame;
 use embedded_can::nb::Can;
 use hashbrown::HashMap;
+use log::trace;
 
 use crate::error::{AbortCode, ErrorCode};
-use crate::info;
+use crate::{debug, info};
 use crate::error::AbortCode::ExceedPDOSize;
 use crate::node::{Node, NodeEvent};
 use crate::object_directory::Variable;
@@ -170,7 +171,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                 continue
             }
 
-            // info!("save_rpdo_messages() 1.3, count = {}, pdo = {:#x?} ", count, pdo);
+            debug!("save_rpdo_messages() 1.3, count = {}, pdo = {:#x?} ", count, pdo);
             let mapping_lengths: Vec<u8> = pdo.mappings[..pdo.num_of_map_objs as usize]
                 .iter()
                 .map(|(_, _, l)| *l)
@@ -238,7 +239,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
     // TPDO section
     pub(crate) fn transmit_pdo_messages(&mut self, is_sync: bool, event: NodeEvent, count: u32)
         -> Result<(), ErrorCode> {
-        // info!("xfguo: transmit_pdo_messages 0");
+        trace!("xfguo: transmit_pdo_messages 0");
         for index in 4..8 {
             let pdo = self.pdo_objects.pdos[index].take().ok_or(ErrorCode::NoPdoObjectInIndex {index})?;
             let result = (|| -> Result<(), ErrorCode> {
@@ -247,7 +248,7 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
                     return Ok(())
                 }
 
-                // info!("xfguo: transmit_pdo_messages 2, count = {}, pdo[{}] = {:#x?}", count, i, pdo);
+                debug!("xfguo: transmit_pdo_messages 2, count = {}, pdo[{}] = {:x?}", count, index, pdo);
                 // Emit a TPDO message.
                 let mappings = pdo.mappings[..pdo.num_of_map_objs as usize].to_vec();
                 let frame = self.gen_pdo_frame(pdo.cob_id, pdo.num_of_map_objs, mappings)?;

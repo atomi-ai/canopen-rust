@@ -269,6 +269,8 @@ impl<CAN: Can> Node<CAN> where CAN::Frame: Frame + Debug {
             let rpdo = self.pdo_objects.get_mut_rpdo_with_cob_id(cob_id)?;
             if frame.data().len() != ((rpdo.total_length() + 7) / 8) as usize {
                 // trigger emergency
+                error!("process_rpdo_frame() 1.3: rpdo = {:x?}, frame_len = {}, rpdo_len = {}",
+                    rpdo, frame.data().len(), (rpdo.total_length() + 7) / 8);
                 let bytes = cob_id.to_le_bytes();
                 return self.trigger_emergency(
                     EmergencyErrorCode::PdoNotProcessed, ErrorRegister::GenericError, &bytes);
